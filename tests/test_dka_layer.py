@@ -46,7 +46,7 @@ def make_layer(seed=0, mu=(0.08, 0.3, 0.7), **kw):
         layer.sigma_raw.copy_(rnd(-1.5, 1.0))
         layer.eta_raw.copy_(rnd(-1.0, 1.0))
         layer.nu_raw.copy_(rnd(-1.0, 1.5))
-        if layer.config.prior == "calibrated":
+        if layer.config.prior != "direct":
             layer.log_c.copy_(rnd(-3.0, 1.0))
         else:
             layer.gamma_raw.copy_(rnd(-0.5, 1.5))
@@ -68,7 +68,8 @@ def inputs(B=2, N=6, seed=1, irregular=True):
 
 def test_matches_reference():
     """dV of the layer equals the literal per-pair update of Eqs. 9-10 (dka.reference.dka_update), per head."""
-    for kw in (dict(), dict(inflation=0.3), dict(prior="direct"), dict(process_noise="steady_state", inflation=0.6)):
+    for kw in (dict(), dict(inflation=0.3), dict(prior="direct"), dict(prior="window"),
+               dict(process_noise="steady_state", inflation=0.6)):
         layer = make_layer(**kw)
         x, t = inputs()
         _, meta = layer(x, t_measure=t, return_metadata=True)
@@ -99,6 +100,27 @@ def test_output_projection_and_metadata():
     close(meta["step"] + meta["null_share"], 1.0, 1e-12)
     prior_precision = torch.exp(layer.sde_params()["log_prior_precision"])
     close(meta["posterior_var"], 1 / (prior_precision + torch.exp(meta["log_evidence"])), 1e-10)
+
+
+def test_prior_counts_tokens():
+    """With prior="tokens", one fully agreeing token (the self-pair with W_k = W_q) takes the step 1 / (1 + c_h) in
+    every head, whatever its decay, noise, inflation or degrees of freedom; "window" makes slow heads abstain."""
+    for kw in (dict(), dict(inflation=0.4), dict(process_noise="steady_state")):
+        layer = make_layer(mu=(0.0, 0.003, 0.8), **kw)
+        with torch.no_grad():
+            layer.W_k.load_state_dict(layer.W_q.state_dict())
+        x, _ = inputs(N=1)
+        _, meta = layer(x, return_metadata=True)
+        c_h = torch.exp(layer.log_c)
+        close(meta["step"], (1 / (1 + c_h)).expand_as(meta["step"]), 1e-12)
+    # In "window" mode with the same c_h, a single agreeing token moves a slow head far less than a fast one
+    layer = make_layer(mu=(0.001, 0.05, 0.8), prior="window")
+    with torch.no_grad():
+        layer.W_k.load_state_dict(layer.W_q.state_dict())
+        layer.log_c.zero_()
+    _, meta = layer(inputs(N=1)[0], return_metadata=True)
+    step = meta["step"][0, 0]
+    assert step[0] < 0.5 * step[2] and step[0] < step[1] < step[2], step
 
 
 def test_flat_prior_limit_is_rfa():

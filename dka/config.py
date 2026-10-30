@@ -144,10 +144,14 @@ class DKAConfig:
     robust_weight: bool = True       # Student-t (power-law) weight; False = exponential weight
 
     # --- Proximal prior on the current estimate (the null slot) ---
-    # "calibrated": gamma^-2 = c_h * S_bar_h with learned log c_h (Appendix G); "direct": learn gamma^2
-    prior: Literal["calibrated", "direct"] = "calibrated"
-    calibration_length: int = 512    # context length over which S_bar is summed (the training length)
-    init_log_c: float = 0.0          # c_h = 1: when all tokens agree, the null slot takes half the weight
+    # "tokens": gamma^-2 = c_h I(0) = c_h / eta^2, the prior is worth c_h agreeing tokens at lag 0, so a single
+    #           agreeing token takes the step 1 / (1 + c_h) in every head, whatever its noise and decay
+    # "window": gamma^-2 = c_h S_bar_h, S_bar_h the information of a whole context of agreeing tokens (Appendix G);
+    #           slow heads then need many agreeing tokens to update (kept for comparison)
+    # "direct": learn gamma^2
+    prior: Literal["tokens", "window", "direct"] = "tokens"
+    init_prior_weight: float = 1.0   # initial c_h ("tokens", "window"); c_h = 1 with "tokens" is softmax-plus-one-like
+    calibration_length: int = 512    # prior="window": context length over which S_bar is summed (the training length)
     init_prior_var: float = 1.0      # initial gamma^2 for prior="direct"
 
     # --- Variance inflation (Appendix F): None = DKA's stationary prior; zeta in [0, 1) = initial inflation ---

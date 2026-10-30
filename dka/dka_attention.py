@@ -32,7 +32,7 @@ class MultiheadIsotropicDKA(nn.Module):
         sigma_raw  process noise; softplus gives sigma^2 or v_inf depending on config.process_noise
         eta_raw    measurement noise, eta^2 = softplus(eta_raw) + eps
         nu_raw     Student-t degrees of freedom, nu = d * softplus(nu_raw) + 2 + eps
-        log_c      prior="calibrated": gamma^-2 = exp(log_c) * S_bar
+        log_c      prior="tokens": gamma^-2 = exp(log_c) / eta^2; prior="window": gamma^-2 = exp(log_c) * S_bar
         gamma_raw  prior="direct": gamma^2 = softplus(gamma_raw) + eps
         theta      inflation zeta = sigmoid(theta) (only if config.inflation is not None)
     """
@@ -72,8 +72,8 @@ class MultiheadIsotropicDKA(nn.Module):
         self.nu_raw = nn.Parameter(torch.full((H,), c.init_nu_over_d))
 
         # --- Proximal prior ---
-        if c.prior == "calibrated":
-            self.log_c = nn.Parameter(torch.full((H,), c.init_log_c))
+        if c.prior != "direct":
+            self.log_c = nn.Parameter(torch.full((H,), math.log(c.init_prior_weight)))
         else:
             self.gamma_raw = nn.Parameter(inv_softplus(torch.full((H,), c.init_prior_var)))
 
@@ -107,7 +107,9 @@ class MultiheadIsotropicDKA(nn.Module):
         sigma_sq = learned if c.process_noise == "variance" else torch.where(mu > 0, 2 * mu * learned, learned)
         eta_sq = F.softplus(self.eta_raw) + c.epsilon
         nu = c.head_dim * F.softplus(self.nu_raw) + 2.0 + c.epsilon
-        if c.prior == "calibrated":
+        if c.prior == "tokens":
+            log_prior_precision = self.log_c - torch.log(eta_sq)     # c_h I(0), I(0) = h(0) / Sigma_n(0) = 1 / eta^2
+        elif c.prior == "window":
             S_bar = calibrated_evidence(mu, sigma_sq, eta_sq, c.calibration_length, self.theta)
             log_prior_precision = self.log_c + torch.log(S_bar)
         else:

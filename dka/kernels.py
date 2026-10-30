@@ -166,8 +166,8 @@ def calibrated_evidence(mu, sigma_sq, eta_sq, length, theta=None):
 
         S_bar = sum_{dt=0}^{length-1} h(dt) / Sigma_n(dt).
 
-    Over a finite context it is finite for slow and zero-decay heads too. Used to calibrate the proximal
-    prior, gamma^-2 = c_h S_bar. mu, sigma_sq, eta_sq, theta: [H]. Returns [H].
+    Over a finite context it is finite for slow and zero-decay heads too. Used by the "window" calibration of
+    the proximal prior, gamma^-2 = c_h S_bar. mu, sigma_sq, eta_sq, theta: [H]. Returns [H].
     """
     lags = torch.arange(length, dtype=mu.dtype, device=mu.device)[:, None]
     log_h, c = inflation_terms(theta, mu, lags)
