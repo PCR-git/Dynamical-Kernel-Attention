@@ -103,8 +103,8 @@ def test_output_projection_and_metadata():
 
 def test_flat_prior_limit_is_rfa():
     """
-    Full inflation (zeta -> 1) and a full step (gamma^2 -> inf) give RFA (tau = 1, no floor gamma^2, no cov_eps),
-    up to the term -W_o V: DKA outputs the correction dV = V_bar - V, RFA the estimate V_bar.
+    Full inflation (zeta -> 1) and a full step (gamma^2 -> inf) give RFA (tau = 1, no floor gamma^2, no cov_eps)
+    with the innovation output V_bar - V; with RFA's estimate output the difference is exactly the term -W_o V.
     """
     for robust in (True, False):
         dka = make_layer(prior="direct", process_noise="steady_state", inflation=0.5, robust_weight=robust,
@@ -112,20 +112,23 @@ def test_flat_prior_limit_is_rfa():
         with torch.no_grad():
             dka.theta.fill_(80.0)            # zeta = 1 - e^-80; theta / (2 mu) is far beyond every lag
             dka.gamma_raw.fill_(1e12)        # gamma^2 = 1e12
-        rfa = MultiheadIsotropicRFA(RFAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, process_noise="steady_state",
-                                              robust_weight=robust, epsilon=1e-12, cov_epsilon=0.0)).double()
-        with torch.no_grad():
-            for name in ("W_q", "W_k", "W_v", "W_o"):
-                getattr(rfa, name).load_state_dict(getattr(dka, name).state_dict())
-            for name in ("omega", "mu", "sigma_raw", "eta_raw", "nu_raw"):
-                getattr(rfa, name).copy_(getattr(dka, name))
-            rfa.gamma_raw.fill_(-80.0)       # floor gamma^2 = softplus(-80) ~ 1e-35
-            rfa.tau_raw.fill_(math.log(math.expm1(1.0)))   # tau = 1 exactly (inv_softplus adds 1e-6)
         x, t = inputs(N=10)
         out_dka, _ = dka(x, t_measure=t)
-        out_rfa, _ = rfa(x, t_measure=t)
         V = dka._project_in(dka.W_v, x).permute(0, 1, 4, 2, 3).reshape(x.shape[0], x.shape[1], -1)
-        close(out_dka + F.linear(V, dka.W_o.weight), out_rfa, 1e-9)
+        for output in ("innovation", "estimate"):
+            rfa = MultiheadIsotropicRFA(RFAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, process_noise="steady_state",
+                                                  robust_weight=robust, epsilon=1e-12, cov_epsilon=0.0,
+                                                  output=output)).double()
+            with torch.no_grad():
+                for name in ("W_q", "W_k", "W_v", "W_o"):
+                    getattr(rfa, name).load_state_dict(getattr(dka, name).state_dict())
+                for name in ("omega", "mu", "sigma_raw", "eta_raw", "nu_raw"):
+                    getattr(rfa, name).copy_(getattr(dka, name))
+                rfa.gamma_raw.fill_(-80.0)       # floor gamma^2 = softplus(-80) ~ 1e-35
+                rfa.tau_raw.fill_(math.log(math.expm1(1.0)))   # tau = 1 exactly (inv_softplus adds 1e-6)
+            out_rfa, _ = rfa(x, t_measure=t)
+            shift = F.linear(V, dka.W_o.weight) if output == "estimate" else 0.0
+            close(out_dka + shift, out_rfa, 1e-9)
 
 
 def test_zero_decay_is_softmax_plus_one():

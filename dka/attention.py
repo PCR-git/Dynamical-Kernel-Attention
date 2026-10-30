@@ -109,7 +109,8 @@ class MultiheadIsotropicRFA(nn.Module):
             return_metadata: also return attention matrices and other diagnostics.
 
         Returns:
-            out [B, N, d_model] (to be added to the residual stream), and a dict with the
+            out [B, N, d_model] = W_o (V_bar - V), or W_o V_bar if config.output == "estimate" (to be added to
+            the residual stream), and a dict with the
             per-head SDE parameters (plus diagnostics if return_metadata).
         """
         c = self.config
@@ -135,8 +136,7 @@ class MultiheadIsotropicRFA(nn.Module):
         Q = rotate(self._project_in(self.W_q, Z_q), cos, -sin)
         K = rotate(self._project_in(self.W_k, Z_k), cos, -sin)
         V = self._project_in(self.W_v, Z_v)
-        if c.rotate_values:
-            V = rotate(V, cos, -sin)
+        V_agg = rotate(V, cos, -sin) if c.rotate_values else V
 
         # --- Robust attention weights ---
         R_sq = residual_norm_sq(Q, K, E, full=c.full_residual_norm)
@@ -148,11 +148,13 @@ class MultiheadIsotropicRFA(nn.Module):
         A = torch.softmax(logits, dim=2)  # normalize over keys j
 
         # --- Aggregate decayed values, then rotate back (Phi^+) ---
-        est = torch.einsum("bijh,bjhdc->bihdc", A * E, V)
+        est = torch.einsum("bijh,bjhdc->bihdc", A * E, V_agg)
         if c.rotate_values:
             est = rotate(est, cos, sin)
 
-        out = self.W_o(est.permute(0, 1, 4, 2, 3).reshape(B, N, -1))  # [re heads..., im heads...]
+        # --- Innovation V_bar - V (or, for checkpoints trained before DKA, the estimate V_bar) ---
+        delta = est - V if c.output == "innovation" else est
+        out = self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1))  # [re heads..., im heads...]
 
         info = self._param_summary(p)
         if return_metadata:

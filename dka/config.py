@@ -41,6 +41,10 @@ class RFAConfig:
     dle_gate: bool = True            # Multiplicative precision in the Mahalanobis distance; False = 1/sqrt(d)
     full_residual_norm: bool = True  # False = use only the cross term (dot-product attention)
     rotate_values: bool = True       # False = aggregate values without rotation or counter-rotation (M2.4)
+
+    # --- Output: "innovation" = W_o (V_bar - V), as in the paper's Algorithm 1 (comparable with DKA);
+    # "estimate" = W_o V_bar, as in the paper's experiments and all checkpoints trained before DKA ---
+    output: Literal["innovation", "estimate"] = "innovation"
     zero_rotations: bool = False
     zero_decay: bool = False
     zero_process_noise: bool = False
@@ -95,6 +99,7 @@ class RFAConfig:
             dle_gate=args.multiplicative_bias_type == 1,
             full_residual_norm=bool(args.use_full_residual_norm),
             rotate_values=args.rotate_values,
+            output=getattr(args, "rfa_output", "estimate"),
             zero_rotations=args.zero_rotations,
             zero_decay=args.lambda_real_zero,
             zero_process_noise=args.zero_process_noise,
