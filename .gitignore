@@ -34,3 +34,6 @@ paper_revisions.md
 
 # Claude Code settings
 .claude/
+
+# Private notes (papers, preprints): kept local, never pushed
+notes/
