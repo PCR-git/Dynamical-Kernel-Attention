@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from rfa import RFAConfig, MultiheadIsotropicRFA
+from dka import RFAConfig, MultiheadIsotropicRFA
 from .config import AttentionConfig, BackboneConfig
 from .layers import MultiHeadAttentionLayer
 

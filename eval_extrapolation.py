@@ -19,8 +19,8 @@ import time
 
 import torch
 
-from rfa.training.lm_data import load_tokenizer, _raw_datasets, _tokenize, _group_texts
-from rfa.training.presets import build_language_model
+from dka.training.lm_data import load_tokenizer, _raw_datasets, _tokenize, _group_texts
+from dka.training.presets import build_language_model
 
 
 def test_blocks(dataset, tokenizer, block_size, root, num_proc):

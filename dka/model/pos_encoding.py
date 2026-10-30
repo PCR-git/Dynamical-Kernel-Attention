@@ -3,8 +3,8 @@ import math
 import torch
 import torch.nn as nn
 
-from rfa.init import init_spectrally_coupled_rope
-from rfa.kernels import rotate
+from dka.init import init_spectrally_coupled_rope
+from dka.kernels import rotate
 
 ##########################################################################################
 ##########################################################################################

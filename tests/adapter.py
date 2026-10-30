@@ -25,12 +25,12 @@ REMOVED_FEATURES = {
 
 
 def _config(overrides):
-    from rfa import RFAConfig
+    from dka import RFAConfig
     return RFAConfig.from_args(make_args(overrides), d_model=D_E, n_heads=N_HEADS, head_dim=D_E // N_HEADS)
 
 
 def build_network(overrides):
-    from rfa.model import RFATransformerNetwork
+    from dka.model import RFATransformerNetwork
     args = make_args(overrides)
     return RFATransformerNetwork(
         args, num_blocks=N_BLOCKS, n_heads=N_HEADS, input_dim=D_E,
@@ -45,14 +45,14 @@ def _unused_norm(key, overrides):
 
 
 def convert_state(legacy_state, overrides):
-    from rfa import convert_legacy_state_dict
+    from dka import convert_legacy_state_dict
     new = convert_legacy_state_dict(legacy_state, _config(overrides))
     return {k: v for k, v in new.items() if not _unused_norm(k, overrides)}
 
 
 def legacy_to_new_key(legacy_key, overrides):
     """Map a legacy state_dict key to the current one (None = dropped)."""
-    from rfa.legacy import convert_legacy_key
+    from dka.legacy import convert_legacy_key
     if _unused_norm(legacy_key, overrides):
         return None
     return convert_legacy_key(legacy_key, _config(overrides))

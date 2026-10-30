@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from rfa.utils import complex_matmul
+from dka.utils import complex_matmul
 
 ##########################################################################################
 ##########################################################################################

@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from rfa import MultiheadIsotropicRFA
+from dka import MultiheadIsotropicRFA
 
 ##########################################################################################
 ##########################################################################################

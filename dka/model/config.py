@@ -1,9 +1,9 @@
-"""Typed configuration of the transformer backbones (the RFA layer itself is configured by rfa.RFAConfig)."""
+"""Typed configuration of the transformer backbones (the RFA layer itself is configured by dka.RFAConfig)."""
 
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
-from rfa import RFAConfig
+from dka import RFAConfig
 
 
 @dataclass(frozen=True)

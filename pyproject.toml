@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "robust-filter-attention"
-version = "1.0.0"
-description = "Robust Filter Attention (RFA): attention as robust filtering under a linear SDE model"
+name = "dynamical-kernel-attention"
+version = "0.1.0"
+description = "Dynamical Kernel Attention (DKA), built on Robust Filter Attention (RFA)"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Peter Racioppo" }]
@@ -25,5 +25,5 @@ notebooks = ["scipy", "jupyter"]
 compile = ['triton-windows>=3.7,<3.8; sys_platform == "win32"']  # torch.compile on Windows; Linux torch wheels include Triton
 
 [tool.setuptools]
-# Only rfa (with rfa.model, rfa.training, rfa.utils) is installed; dynamics/ and visualization/ serve the notebooks.
-packages = { find = { include = ["rfa*"] } }
+# Only dka (with dka.model, dka.training, dka.utils) is installed; dynamics/ and visualization/ serve the notebooks.
+packages = { find = { include = ["dka*"] } }

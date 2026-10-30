@@ -28,8 +28,8 @@ computes attention weights based on residual consistency in Mahalanobis geometry
 ## Repository Structure
 
 ```
-robust_filter_attention/
-├── rfa/                      # The installable package
+DKA/
+├── dka/                      # The installable package
 │   ├── config.py             #   RFAConfig: all options of an RFA layer
 │   ├── attention.py          #   MultiheadIsotropicRFA (Algorithm 1 of the paper)
 │   ├── kernels.py            #   Pure functions: rotations, DLE covariance, residual norm, logits
@@ -60,10 +60,10 @@ Python 3.11 and PyTorch 2.11 (CUDA 12.8) were used for the paper; `requirements.
 
 ```
 pip install -r requirements.txt   # exact versions used for the paper
-pip install -e .                  # makes rfa importable from other projects
+pip install -e .                  # makes dka importable from other projects
 ```
 
-`pip install -e .` installs the code in place, so `import rfa` works from any folder while edits to
+`pip install -e .` installs the code in place, so `import dka` works from any folder while edits to
 this repository take effect immediately. Once the repository is on GitHub, `pip install git+https://github.com/<user>/<repo>.git`
 installs it without a local copy. `pip install -e ".[compile]"` adds Triton for `--compile`
 on Windows; `".[notebooks]"` adds Jupyter and SciPy.
@@ -71,7 +71,7 @@ on Windows; `".[notebooks]"` adds Jupyter and SciPy.
 ## Using the RFA layer
 
 ```python
-from rfa import RFAConfig, MultiheadIsotropicRFA
+from dka import RFAConfig, MultiheadIsotropicRFA
 
 config = RFAConfig(d_model=256, n_heads=8, head_dim=32,
                    frequency_init="spectral", decay_init="spectral", damping=0.05)  # SC-RFA (M2)
@@ -85,8 +85,8 @@ A `Backbone` is a stack of residual blocks whose attention is RFA or a baseline,
 type of `config.attention`:
 
 ```python
-from rfa import RFAConfig
-from rfa.model import AttentionConfig, BackboneConfig, Backbone, LanguageModel
+from dka import RFAConfig
+from dka.model import AttentionConfig, BackboneConfig, Backbone, LanguageModel
 
 rfa = RFAConfig(d_model=256, n_heads=8, head_dim=32, frequency_init="spectral", damping=0.05)
 rope = AttentionConfig(d_model=256, n_heads=8, width=512, rope="rope")         # baseline B1
@@ -95,13 +95,13 @@ out, infos = backbone(x, return_metadata=True)  # infos[i]: block i's parameters
 lm = LanguageModel(backbone, vocab_size=50257, embed_dim=256)
 ```
 
-`rfa/training/presets.py` gives the paper's models as configs (`backbone_config(make_args("M2"))`).
+`dka/training/presets.py` gives the paper's models as configs (`backbone_config(make_args("M2"))`).
 
-The paper notebooks use the older constructors in `rfa/model/compat.py` (`RFATransformerNetwork`,
+The paper notebooks use the older constructors in `dka/model/compat.py` (`RFATransformerNetwork`,
 `TransformerNetwork`, `RFA_Block`, ...). They take the notebooks' `args` namespace, build the same
 modules (identical parameter names, so all checkpoints load in both), and keep their original return
 formats. Checkpoints saved by earlier versions of this code load with
-`rfa.model.load_legacy_state_dict(model, state_dict)`.
+`dka.model.load_legacy_state_dict(model, state_dict)`.
 
 ## Training language models
 
@@ -118,7 +118,7 @@ while the run is unfinished (`--resume .../resume.pt`), progress plots, and `met
 (per-epoch train/validation loss, validation perplexity, epoch time; test perplexity at the end).
 `run_queue.ps1` runs a list of trainings one after another.
 
-Presets (`rfa/training/presets.py`) cover the paper's models: baselines B1 (RoPE), B2 (ALiBi),
+Presets (`dka/training/presets.py`) cover the paper's models: baselines B1 (RoPE), B2 (ALiBi),
 B3 (RoPE + decay), B4 (SC-RoPE + decay); RFA models M1, M2, M3; and the ablations M2.1-M2.8:
 M2.7 (minimal SC-RFA: SC rotary attention plus only the additive precision bias, i.e. a learned
 logarithmic distance bias) and M2.8 (M2.6 without value rotation, which is rotary dot-product

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from rfa.init import init_spectrally_coupled_rope
+from dka.init import init_spectrally_coupled_rope
 from .config import AttentionConfig
 from .pos_encoding import RoPE, SCRoPE, get_alibi_slopes
 
