@@ -10,13 +10,13 @@
 # -Skip name1,name2 skips runs by name (e.g. ones already finished).
 # To continue an interrupted run, add --resume <run dir>\resume.pt (plus its original --set overrides) to its arguments.
 # Python: $env:RFA_PYTHON if set (e.g. a conda env's python.exe), else "python" on PATH.
-# Output: $env:RFA_RUNS_DIR if set (e.g. a folder outside OneDrive), else <repo>\runs.
+# Output: $env:DKA_RUNS_DIR if set (e.g. a folder outside OneDrive), else <repo>\runs.
 
 param([string[]]$Skip = @())
 
 $python = if ($env:RFA_PYTHON) { $env:RFA_PYTHON } else { "python" }
 $repo = $PSScriptRoot
-$outDir = if ($env:RFA_RUNS_DIR) { $env:RFA_RUNS_DIR } else { Join-Path $repo "runs" }
+$outDir = if ($env:DKA_RUNS_DIR) { $env:DKA_RUNS_DIR } else { Join-Path $repo "runs" }
 
 # dataset, preset, name, extra arguments to train_lm.py (defaults match the published runs)
 # Run names below use the numbering before 2026-10-28: run "M2.7" is now preset M2.8 and vice versa.

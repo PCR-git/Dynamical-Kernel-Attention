@@ -12,7 +12,7 @@ Presets are defined in rfa/training/presets.py. Each run writes to <out-dir>/<da
     resume.pt       weights + optimizer/scheduler state of the latest epoch (deleted when the run finishes)
     metrics.txt     per-epoch train/validation loss, validation perplexity, time; test perplexity at the end
     training_progress_epoch_N.png
-The default <out-dir> is $RFA_RUNS_DIR if set (e.g. a folder outside a synced source tree), else ./runs.
+The default <out-dir> is $DKA_RUNS_DIR if set (e.g. a folder outside a synced source tree), else ./runs.
 """
 
 import argparse
@@ -57,7 +57,7 @@ def write_metrics(path, header, history, test=None):
         f.write("\n".join(lines) + "\n")
 
 
-DEFAULT_OUT_DIR = os.environ.get("RFA_RUNS_DIR", "runs")
+DEFAULT_OUT_DIR = os.environ.get("DKA_RUNS_DIR", "runs")
 
 
 def main():

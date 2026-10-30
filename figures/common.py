@@ -13,7 +13,7 @@ sys.path.insert(0, REPO)
 from eval_extrapolation import latest_checkpoint  # noqa: E402
 from rfa.training.presets import build_language_model  # noqa: E402
 
-RUNS = os.environ.get("RFA_RUNS_DIR", os.path.join(REPO, "runs"))
+RUNS = os.environ.get("DKA_RUNS_DIR", os.path.join(REPO, "runs"))
 IMAGES = os.path.join(REPO, "images")
 
 STYLE = {  # same colors/markers per model as the published figures
@@ -32,7 +32,7 @@ def latest_run(name, dataset="wikitext103"):
     root = os.path.join(RUNS, dataset)
     dirs = sorted(d for d in os.listdir(root) if d.startswith(name + "__"))
     if not dirs:
-        raise FileNotFoundError(f"no run {name}__* in {root} (set RFA_RUNS_DIR to the training output folder)")
+        raise FileNotFoundError(f"no run {name}__* in {root} (set DKA_RUNS_DIR to the training output folder)")
     return os.path.join(root, dirs[-1])
 
 

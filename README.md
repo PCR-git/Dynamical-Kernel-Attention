@@ -105,7 +105,7 @@ python train_lm.py --dataset wikitext103 --preset M2 --set damping=0.5   # overr
 ```
 
 Each run writes to `<out-dir>/<dataset>/<name>__<date>/` (`--out-dir` defaults to
-`$RFA_RUNS_DIR` if set, e.g. a folder outside a synced source tree, else `./runs`; `--name` to `<backbone>__<preset>`):
+`$DKA_RUNS_DIR` if set, e.g. a folder outside a synced source tree, else `./runs`; `--name` to `<backbone>__<preset>`):
 model weights of the last two epochs (`lm_epoch_N.pt`), `resume.pt` with the optimizer state
 while the run is unfinished (`--resume .../resume.pt`), progress plots, and `metrics.txt`
 (per-epoch train/validation loss, validation perplexity, epoch time; test perplexity at the end).
@@ -152,7 +152,7 @@ python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/M2__<date>  
 ```
 
 The result figures are drawn by the scripts in `figures/`, into the `images/` paths the paper uses
-(they read the trained runs in `$RFA_RUNS_DIR`, or `./runs`):
+(they read the trained runs in `$DKA_RUNS_DIR`, or `./runs`):
 
 ```
 python figures/curves.py             # validation curves, extrapolation, damping sweep -> images/other_imgs/

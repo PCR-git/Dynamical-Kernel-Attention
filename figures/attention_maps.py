@@ -9,7 +9,7 @@ Input: the first 4096-token block of the WikiText-103 test split. Each panel is 
 clipped at the 99.5th percentile (linear) or uses PowerNorm(gamma=0.2). For RFA models the map is the
 softmax attention before the decay exp(-mu * lag) is applied, and the head titles give mu * L and the
 surviving weight exp(-mu * L) at the right edge of the view. Needs a GPU, the trained runs in
-$RFA_RUNS_DIR, and the data in ./datasets.
+$DKA_RUNS_DIR, and the data in ./datasets.
 """
 import argparse
 import os
@@ -62,7 +62,7 @@ def plot(A, mu, view_range, use_powernorm, path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("models", nargs="*", default=["B1", "B2", "M1", "M2"], help="run names in $RFA_RUNS_DIR/wikitext103")
+    p.add_argument("models", nargs="*", default=["B1", "B2", "M1", "M2"], help="run names in $DKA_RUNS_DIR/wikitext103")
     p.add_argument("--all-variants", action="store_true", help="also PowerNorm and the 3000-4096 zoom")
     p.add_argument("--out-dir", default=os.path.join(IMAGES, "attn_mats"))
     p.add_argument("--data-dir", default=os.path.join(REPO, "datasets"))

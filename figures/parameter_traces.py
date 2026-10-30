@@ -12,7 +12,7 @@ cell 47), into images/Noise_params_m1/ and images/Noise_params_m2/:
 
     python figures/parameter_traces.py
 
-Reads the history stored in the latest checkpoint of the M1 and M2 runs in $RFA_RUNS_DIR (train_lm.py logs
+Reads the history stored in the latest checkpoint of the M1 and M2 runs in $DKA_RUNS_DIR (train_lm.py logs
 the parameters every 100 steps). Heads with mu = 0 have no steady state and are left out of the
 sigma^2 / 2 mu and alpha plots.
 """

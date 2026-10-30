@@ -7,7 +7,7 @@ Perplexity figures of the paper (style of Test LMs.ipynb cells 16, 71 and 73), i
 
     python figures/curves.py [out_dir]
 
-Reads the WikiText-103 runs in $RFA_RUNS_DIR (default: <repo>/runs). The two table figures plot the
+Reads the WikiText-103 runs in $DKA_RUNS_DIR (default: <repo>/runs). The two table figures plot the
 paper's numbers, which eval_extrapolation.py reproduces from the trained runs.
 """
 import os
