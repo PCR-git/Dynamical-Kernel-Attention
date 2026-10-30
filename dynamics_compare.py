@@ -20,7 +20,10 @@ References, computed on the test trajectories without training:
               DKA with inflation zeta = m / (v_inf + m). Weights either Gaussian (the layer's rule as
               nu -> infinity) or 1 (pure precision weighting: the composite-likelihood estimate).
 
-    python dynamics_compare.py                                   # writes runs/dynamics_compare/<date>/
+    python dynamics_compare.py                                   # writes runs/dynamics_compare/<date>_v2/
+    python dynamics_compare.py --data stationary --test-length 400 --out-dir runs/dynamics_compare/stationary_extrap
+                                    # stationary data (x0 from the stationary law), trained at length 101, tested
+                                    # at 400: positions beyond 101 measure length extrapolation
     python dynamics_compare.py --steps 300 --seeds 0 --decays 0.01 --models dka   # quick test
     python dynamics_compare.py --check                           # oracle vs dka.reference
 """
@@ -79,9 +82,9 @@ def discrete_model():
     return Phi, Q, SIGMA_MEASURE ** 2 * torch.eye(2, dtype=F64)
 
 
-def simulate(n, seed, device, stationary=False, keep_fine=0):
+def simulate(n, seed, device, stationary=False, keep_fine=0, n_meas=N_MEAS):
     """
-    n trajectories: true states X and measurements Z at the N_MEAS measurement times, [n, N_MEAS, 2]
+    n trajectories: true states X and measurements Z at n_meas measurement times, [n, n_meas, 2]
     (float32 on device). x0 at radius 20 +- 3 (notebook), or from the stationary distribution.
     keep_fine > 0 also returns the fine Euler path of the first keep_fine trajectories.
     """
@@ -95,7 +98,7 @@ def simulate(n, seed, device, stationary=False, keep_fine=0):
         theta = torch.rand(n, generator=g) * 2 * np.pi
         r = 20.0 + (torch.rand(n, generator=g) * 2 - 1) * 3.0
         x = torch.stack([r * torch.cos(theta), r * torch.sin(theta)], -1).to(device)
-    steps = (N_MEAS - 1) * N_SUB
+    steps = (n_meas - 1) * N_SUB
     noise = (torch.randn(steps, n, 2, generator=g) * SIGMA_PROCESS * DT ** 0.5).to(device)
     X, fine = [x], [x[:keep_fine]]
     for k in range(steps):
@@ -261,9 +264,9 @@ class DynamicsModel(nn.Module):
 LOG_KEYS = ("sigma_tilde_sq_v", "eta_sq_v", "gamma_sq_v", "nu_over_d", "tau", "prior_weight", "zeta", "step_mean")
 
 
-def train(name, decay, seed, steps, batch, lr, device, log_every):
+def train(name, decay, seed, steps, batch, lr, device, log_every, stationary=False):
     seed_everything(seed)
-    pool = simulate(steps * batch, seed=10_000 + seed, device=device)["Z"]     # fresh trajectories at every step
+    pool = simulate(steps * batch, seed=10_000 + seed, device=device, stationary=stationary)["Z"]   # fresh at every step
     model = DynamicsModel(name, decay).to(device)
     sde = [p for n, p in model.named_parameters() if any(k in n for k in SDE_KEYS)]
     feat = [p for n, p in model.named_parameters() if not any(k in n for k in SDE_KEYS)]
@@ -321,12 +324,33 @@ def mse_vs(pred, test):
     return ((pred - test["X"][:, 1:].cpu()) ** 2).sum(-1).mean(0).numpy()
 
 
+TRAIN_LEN = N_MEAS - 1     # input positions seen in training (0..100)
+
+
+def in_window(mse):
+    """Mean error over positions 10..100 (inside the training length, after the start-up)."""
+    return float(mse[10:TRAIN_LEN].mean())
+
+
+def beyond(mse):
+    """Mean error over positions beyond the training length (None if the test is not longer)."""
+    return float(mse[TRAIN_LEN:].mean()) if len(mse) > TRAIN_LEN else None
+
+
+def mark_train_length(ax, length):
+    if length > TRAIN_LEN:
+        ax.axvline(TRAIN_LEN - 0.5, color="gray", lw=1, ls="--")
+        ax.text(TRAIN_LEN + 2, ax.get_ylim()[1], "beyond training length", va="top", fontsize=9, color="gray")
+
+
 def plot_references(refs, path, title):
     fig, ax = plt.subplots(figsize=(9, 5))
     for label, (mse, style) in refs.items():
-        ax.plot(mse, style, label=f"{label} (mean {mse[10:].mean():.3f})", lw=1.4)
+        extra = f", beyond {beyond(mse):.3f}" if beyond(mse) is not None else ""
+        ax.plot(mse, style, label=f"{label} (mean {in_window(mse):.3f}{extra})", lw=1.4)
     ax.set_yscale("log"); ax.set_xlabel("position i"); ax.set_ylabel("squared error vs true x(t_{i+1})")
     ax.set_title(title, fontsize=11); ax.grid(True, alpha=0.3); ax.legend(frameon=False, fontsize=9)
+    mark_train_length(ax, len(next(iter(refs.values()))[0]))
     fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
 
 
@@ -350,13 +374,18 @@ def plot_decay(results, refs, test, out_dir, show_idx=1):
     fig, ax = plt.subplots(figsize=(10, 5.5))
     for n in names:
         m = np.mean([r["mse"] for r in results[n]], 0)
-        spread = np.std([r["mse"][10:].mean() for r in results[n]])
-        ax.plot(m, color=COLORS[n], label=f"{LABELS[n]} (mean {m[10:].mean():.3f} +- {spread:.3f})")
+        spread = np.std([in_window(r["mse"]) for r in results[n]])
+        extra = (f", beyond {beyond(m):.3f} +- {np.std([beyond(r['mse']) for r in results[n]]):.3f}"
+                 if beyond(m) is not None else "")
+        ax.plot(m, color=COLORS[n], label=f"{LABELS[n]} ({in_window(m):.3f} +- {spread:.3f}{extra})")
     for label, (mse, style) in refs.items():
-        ax.plot(mse, style, lw=1.2, label=f"{label} (mean {mse[10:].mean():.3f})")
+        extra = f", beyond {beyond(mse):.3f}" if beyond(mse) is not None else ""
+        ax.plot(mse, style, lw=1.2, label=f"{label} ({in_window(mse):.3f}{extra})")
     ax.set_yscale("log"); ax.set_xlabel("position i"); ax.set_ylabel("squared error vs true x(t_{i+1})")
-    ax.set_title("test trajectories, mean over seeds (means over positions 10-100, +- sd over seeds)", fontsize=10)
+    ax.set_title("test trajectories, mean over seeds (mean over positions 10-100 +- sd over seeds"
+                 + (", and beyond the training length)" if beyond(m) is not None else ")"), fontsize=10)
     ax.grid(True, alpha=0.3); ax.legend(frameon=False, fontsize=8, ncol=2)
+    mark_train_length(ax, len(m))
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, "2_prediction_error.png"), dpi=110); plt.close(fig)
 
     # 3. Trajectories (seed 0)
@@ -435,8 +464,8 @@ def plot_decay(results, refs, test, out_dir, show_idx=1):
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, "7_eigenvalues.png"), dpi=110); plt.close(fig)
 
 
-def plot_summary(table, refs, path):
-    """Mean error (positions 10-100) of every model and decay, +- sd over seeds, with the references."""
+def plot_summary(table, refs, path, ylabel="squared error vs true next state (mean over positions 10-100)"):
+    """Mean error of every model and decay, +- sd over seeds, with the references."""
     decays = sorted({d for (_, d) in table})
     names = [n for n in MODELS if any((n, d) in table for d in decays)]
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -449,7 +478,7 @@ def plot_summary(table, refs, path):
     for label, (value, style) in refs.items():
         ax.axhline(value, ls=style, color="k", lw=1, label=f"{label}: {value:.3f}")
     ax.set_xticks(range(len(names))); ax.set_xticklabels([LABELS[n] for n in names])
-    ax.set_ylabel("squared error vs true next state (mean over positions 10-100)")
+    ax.set_ylabel(ylabel)
     ax.grid(True, axis="y", alpha=0.3); ax.legend(frameon=False, fontsize=8)
     fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
 
@@ -469,6 +498,10 @@ def main():
     p.add_argument("--log-every", type=int, default=20)
     p.add_argument("--check", action="store_true", help="check the oracle against dka.reference and exit")
     p.add_argument("--references-only", action="store_true", help="compute the untrained references and exit")
+    p.add_argument("--data", choices=("transient", "stationary"), default="transient",
+                   help="training and test data: the notebook's spirals from radius 20, or x0 from the stationary law")
+    p.add_argument("--test-length", type=int, default=TRAIN_LEN,
+                   help="input positions at test time (training uses 101); longer tests length extrapolation")
     p.add_argument("--out-dir", default=os.path.join("runs", "dynamics_compare", f"{datetime.date.today()}_v2"))
     cli = p.parse_args()
     if cli.check:
@@ -486,7 +519,8 @@ def main():
     infl = lambda z: float("inf") if z == 1.0 else v_bar * z / (1 - z)
     ref_tables = {}
     for kind in ("transient", "stationary"):
-        test = simulate(cli.test_samples, seed=999, device=device, stationary=(kind == "stationary"), keep_fine=4)
+        test = simulate(cli.test_samples, seed=999, device=device, stationary=(kind == "stationary"), keep_fine=4,
+                        n_meas=cli.test_length + 1)
         P0 = V_inf if kind == "stationary" else (20.0 ** 2 + 3.0 ** 2 / 3) / 2 * torch.eye(2, dtype=F64)
         Zin = test["Z"][:, :-1]
         mses = {"Kalman (optimal)": mse_vs(kalman_predictions(Zin, P0), test),
@@ -495,10 +529,12 @@ def main():
         for gated in (False, True):
             for z in zetas:
                 mse = mse_vs(oracle_predictions(Zin, infl(z), gated), test)
-                sweep[(gated, z)] = float(mse[10:].mean())
+                sweep[(gated, z)] = in_window(mse)
                 if z in (0.0, 1.0):
                     mses[f"{'DKA' if z == 0 else 'RFA'} oracle, {'Gaussian weights' if gated else 'w = 1'}"] = mse
-        ref_tables[kind] = {k: float(v[10:].mean()) for k, v in mses.items()}
+        ref_tables[kind] = {k: in_window(v) for k, v in mses.items()}
+        if cli.test_length > TRAIN_LEN:
+            ref_tables[kind]["beyond_training_length"] = {k: beyond(v) for k, v in mses.items()}
         ref_tables[kind]["zeta_sweep"] = {f"{'gauss' if g else 'w1'}_zeta={z:g}": v for (g, z), v in sweep.items()}
         styles = {"Kalman (optimal)": "k--", "last measurement": "k:", "DKA oracle, w = 1": "r-",
                   "DKA oracle, Gaussian weights": "r--", "RFA oracle, w = 1": "b-", "RFA oracle, Gaussian weights": "b--"}
@@ -516,13 +552,13 @@ def main():
         ax.set_yscale("log"); ax.grid(True, alpha=0.3); ax.legend(frameon=False)
         ax.set_title(f"oracle estimators vs inflation, {kind} data", fontsize=11)
         fig.tight_layout(); fig.savefig(os.path.join(cli.out_dir, f"0_oracle_vs_zeta_{kind}.png"), dpi=110); plt.close(fig)
-        if kind == "transient":
+        if kind == cli.data:
             refs = {"Kalman (optimal)": (mses["Kalman (optimal)"], "k--"),
                     "DKA oracle": (mses["DKA oracle, Gaussian weights"], "k-."),
                     "RFA oracle": (mses["RFA oracle, Gaussian weights"], "k:")}
             test["ref_eigs"] = {"true one-step map": (np.linalg.eigvals(Phi.numpy()), "x"),
                                 "Kalman (same fit)": (plane_eigs(kalman_predictions(Zin, P0), test["Z"]), "+")}
-            test_transient = test
+            test_main = test
     summary["references"] = ref_tables
     print(json.dumps(ref_tables, indent=1), flush=True)
     if cli.references_only:
@@ -531,34 +567,45 @@ def main():
         return
 
     # --- Trained models ---
-    table = {}
+    table, table_beyond = {}, {}
+    summary["data"], summary["test_length"] = cli.data, cli.test_length
     for decay in cli.decays:
         results = {}
         for name in cli.models:
             results[name] = []
             for seed in cli.seeds:
-                model, hist = train(name, decay, seed, cli.steps, cli.batch, cli.lr, device, cli.log_every)
-                pred2, mse, meta = evaluate(model, test_transient)
+                model, hist = train(name, decay, seed, cli.steps, cli.batch, cli.lr, device, cli.log_every,
+                                    stationary=(cli.data == "stationary"))
+                pred2, mse, meta = evaluate(model, test_main)
                 if seed != cli.seeds[0]:
                     meta = None        # keep diagnostics of the first seed only
                 results[name].append(dict(hist=hist, pred=pred2, mse=mse, meta=meta,
-                                          plane_eigs=plane_eigs(pred2, test_transient["Z"])))
-                table[(name, decay)] = table.get((name, decay), []) + [float(mse[10:].mean())]
+                                          plane_eigs=plane_eigs(pred2, test_main["Z"])))
+                table[(name, decay)] = table.get((name, decay), []) + [in_window(mse)]
+                if beyond(mse) is not None:
+                    table_beyond[(name, decay)] = table_beyond.get((name, decay), []) + [beyond(mse)]
                 del model
-        plot_decay(results, refs, test_transient, os.path.join(cli.out_dir, f"mu_{decay}"))
+        plot_decay(results, refs, test_main, os.path.join(cli.out_dir, f"mu_{decay}"))
         summary[f"mu_{decay}"] = {
             n: dict(mse_mean=float(np.mean(table[(n, decay)])), mse_sd=float(np.std(table[(n, decay)])),
                     mse_per_seed=table[(n, decay)],
+                    **({"beyond_mean": float(np.mean(table_beyond[(n, decay)])),
+                        "beyond_sd": float(np.std(table_beyond[(n, decay)])),
+                        "beyond_per_seed": table_beyond[(n, decay)]} if (n, decay) in table_beyond else {}),
                     final_params_seed0={k: np.array(results[n][0]["hist"][k][-1]).round(4).tolist()
                                         for k in LOG_KEYS if k in results[n][0]["hist"]})
             for n in results}
         with open(os.path.join(cli.out_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=1)
 
-    plot_summary(table, {"Kalman (optimal)": (refs["Kalman (optimal)"][0][10:].mean(), "--"),
-                         "DKA oracle": (refs["DKA oracle"][0][10:].mean(), "-."),
-                         "RFA oracle": (refs["RFA oracle"][0][10:].mean(), ":")},
+    plot_summary(table, {k: (in_window(v[0]), st) for k, (v, st) in
+                         zip(refs, zip(refs.values(), ("--", "-.", ":")))},
                  os.path.join(cli.out_dir, "summary.png"))
+    if table_beyond:
+        plot_summary(table_beyond, {k: (beyond(v[0]), st) for k, (v, st) in
+                                    zip(refs, zip(refs.values(), ("--", "-.", ":")))},
+                     os.path.join(cli.out_dir, "summary_beyond_training_length.png"),
+                     ylabel=f"squared error vs true next state (mean over positions {TRAIN_LEN}-{cli.test_length - 1})")
     print(json.dumps({k: v for k, v in summary.items() if k.startswith("mu_")}, indent=1))
     print(f"Figures in {cli.out_dir}")
 
