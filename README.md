@@ -1,3 +1,10 @@
+# Dynamical Kernel Attention (DKA)
+
+DKA builds on [Robust Filter Attention (RFA)](https://github.com/PCR-git/Robust-Filter-Attention). The
+sections below describe the RFA code this project starts from.
+
+---
+
 # Robust Filter Attention (RFA)
 
 Code for *Robust Filter Attention: Self-Attention as Precision-Weighted State Estimation*
