@@ -4,7 +4,9 @@ Named model configurations from the paper, as overrides of the notebook-style `a
     args = make_args("M3", device=device)     # defaults + preset + any overrides
     model = build_language_model(args)
 
-Presets starting with "B" are dot-product baselines (TransformerNetwork); the others are RFA.
+Presets starting with "B" are dot-product baselines (TransformerNetwork), those starting with "D" are DKA,
+the others are RFA. RFA presets ending in ".I" output the innovation W_o (V_bar - V) instead of the
+estimate W_o V_bar (the published runs).
 """
 
 from argparse import Namespace
@@ -37,11 +39,23 @@ BASE_ARGS = dict(
     # Numerics
     epsilon=1e-5, min_exponent=-10, max_exponent=0,
 
+    # Attention family of the non-baseline presets: "rfa" or "dka"
+    attention_type="rfa",
+    rfa_output="estimate",            # RFA: "estimate" (published runs) or "innovation" (paper Alg. 1, as DKA)
+
+    # DKA (only used when attention_type="dka"; dynamics and noise use the RFA flags above)
+    dka_prior="tokens",               # null slot gamma^-2 = c_h / eta^2 ("tokens"), c_h S_bar ("window"), or "direct"
+    dka_init_prior_weight=1.0,        # initial c_h: the prior is worth c_h agreeing tokens
+    dka_init_prior_var=1.0,           # initial gamma^2 for dka_prior="direct"
+    dka_inflation=None,               # None = stationary prior; zeta in [0, 1) = initial variance inflation (App. F)
+    dka_learn_inflation=True,
+
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False,
 )
 
 _SC = dict(use_SC_RoPE=True, scale_decay_by_time_interval=False, use_log_linear_decay=False)
+_DKA = dict(attention_type="dka", zero_frac=0.0)
 _NO_DLE = dict(zero_process_noise=True, zero_key_measurement_noise=True, additive_bias_type=0, multiplicative_bias_type=0)
 
 PRESETS = {
@@ -76,6 +90,17 @@ PRESETS = {
     # (Trained 2026-10-18/19 as runs "M2.7" and "M2.7_rope_spec", before the renumbering.)
     "M2.8": dict(_SC, damping=0.0, use_robust_weight=False, use_full_residual_norm=0,
                  lambda_real_zero=True, max_fixed_decay=0.0, rotate_values=False, **_NO_DLE),
+    # --- RFA with the innovation output (comparable with DKA) ---
+    "M1.I": dict(use_log_linear_decay=False, damping=0.05, rfa_output="innovation"),
+    "M2.I": dict(_SC, damping=0.05, rfa_output="innovation"),
+    "M3.I": dict(_SC, damping=5.0, zero_frac=0.0, target_ss_process_var=0.5, rfa_output="innovation"),
+    # --- DKA models (counterparts of M1-M3, with slow heads instead of zero-decay heads) ---
+    "D1":   dict(_DKA, use_log_linear_decay=False, damping=0.05),                   # Isotropic DKA
+    "D2":   dict(_DKA, **_SC, damping=0.05),                                        # SC-DKA (in-window)
+    "D3":   dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5),              # SC-DKA (extrapolation)
+    # Variance inflation (App. F), learned from zeta = 0.5
+    "D2.Z": dict(_DKA, **_SC, damping=0.05, dka_inflation=0.5),
+    "D3.Z": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_inflation=0.5),
 }
 
 

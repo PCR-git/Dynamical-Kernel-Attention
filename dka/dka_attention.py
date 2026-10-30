@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import DKAConfig
-from .init import (inv_softplus, init_complex_matrix, init_complex_linear_,
+from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
 from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, inflation_terms, dka_covariance,
                       dka_residual_norm_sq, calibrated_evidence)
@@ -181,6 +181,7 @@ class MultiheadIsotropicDKA(nn.Module):
         out = self.W_o(dV.permute(0, 1, 4, 2, 3).reshape(B, N, -1))   # [re heads..., im heads...]
 
         info = self._param_summary(p)
+        info["step_mean"] = (S / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
         if return_metadata:
             info.update(self._metadata(p, A_hat, null, S, m, denom, dV))
         return out, info
@@ -188,13 +189,15 @@ class MultiheadIsotropicDKA(nn.Module):
     # ------------------------------------------------------------------
 
     def _param_summary(self, p):
-        """Per-head physical parameters (keys as in RFA where they mean the same thing)."""
+        """Per-head physical parameters (keys as in RFA where they mean the same thing; prior_weight is c_h)."""
         mu = p["mu"]
         v_inf = torch.where(mu > 0, p["sigma_sq"] / (2 * mu).clamp_min(1e-12), torch.full_like(mu, float("inf")))
         summary = {
             "mu_v": mu, "sigma_sq_v": p["sigma_sq"], "sigma_tilde_sq_v": v_inf, "eta_sq_v": p["eta_sq"],
             "gamma_sq_v": torch.exp(-p["log_prior_precision"]), "nu_over_d": p["nu"] / self.config.head_dim,
         }
+        if self.config.prior != "direct":
+            summary["prior_weight"] = torch.exp(self.log_c)
         if p["theta"] is not None:
             summary["zeta"] = torch.sigmoid(p["theta"])
         return summary
@@ -212,6 +215,7 @@ class MultiheadIsotropicDKA(nn.Module):
             "step": S / denom,                       # S_i / (gamma^-2 + S_i), the gain [B, N, H]
             "null_share": null / denom,              # 1 - step
             "log_evidence": torch.log(S) + m,        # log S_i, the information from the context [B, N, H]
+            "P_tot": torch.log(S) + m,               # (same, under RFA's key for the plotting code)
             "posterior_var": torch.exp(-m) / denom,  # 1 / (gamma^-2 + S_i)
             "dV": dV,                                # innovation in the eigenbasis [B, N, H, D, 2]
             "eigenvals": eigenvals,

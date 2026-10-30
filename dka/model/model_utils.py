@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from dka import MultiheadIsotropicRFA
+from dka import MultiheadIsotropicRFA, MultiheadIsotropicDKA
 
 ##########################################################################################
 ##########################################################################################
@@ -95,11 +95,13 @@ def autoregressive_sample(model, start_seq, max_gen_len, t_measure=None, t_equal
 ##########################################################################################
 
 def get_rfa_layers(model):
-    return [m for m in model.modules() if isinstance(m, MultiheadIsotropicRFA)]
+    """The RFA and DKA attention layers of a model, in order."""
+    return [m for m in model.modules() if isinstance(m, (MultiheadIsotropicRFA, MultiheadIsotropicDKA))]
 
 
 def get_model_sde_snapshots(model):
-    """Per-layer dict of the physical per-head SDE parameters (numpy arrays)."""
+    """Per-layer dict of the physical per-head SDE parameters (numpy arrays). RFA has tau; DKA has prior_weight
+    (c_h) and, with variance inflation, zeta."""
     snapshot = {}
     with torch.no_grad():
         for layer_idx, module in enumerate(get_rfa_layers(model)):
@@ -111,9 +113,11 @@ def get_model_sde_snapshots(model):
                 "sigma_tilde_sq": summary["sigma_tilde_sq_v"].cpu().numpy(),
                 "eta_sq": summary["eta_sq_v"].cpu().numpy(),
                 "gamma_sq": summary["gamma_sq_v"].cpu().numpy(),
-                "tau": summary["tau"].cpu().numpy(),
                 "nu_over_d": summary["nu_over_d"].cpu().numpy(),
             }
+            for key in ("tau", "prior_weight", "zeta"):
+                if key in summary:
+                    snapshot[f"layer_{layer_idx}"][key] = summary[key].cpu().numpy()
     return snapshot
 
 ##########################################################################################

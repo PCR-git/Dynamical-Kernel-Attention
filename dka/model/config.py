@@ -1,9 +1,10 @@
-"""Typed configuration of the transformer backbones (the RFA layer itself is configured by dka.RFAConfig)."""
+"""Typed configuration of the transformer backbones (the RFA and DKA layers are configured by dka.RFAConfig and
+dka.DKAConfig)."""
 
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
-from dka import RFAConfig
+from dka import RFAConfig, DKAConfig
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,7 @@ class BackboneConfig:
     feedforward network, a final norm, and optional d->d projections around the stack.
     """
 
-    attention: Union[RFAConfig, AttentionConfig]
+    attention: Union[RFAConfig, DKAConfig, AttentionConfig]
     n_blocks: int
     ffn_dim: int
     norm: Optional[Literal["layer", "rms"]] = "layer"  # None = no normalization layers at all

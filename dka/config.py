@@ -166,3 +166,47 @@ class DKAConfig:
             raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
         if self.inflation is not None and not 0.0 <= self.inflation < 1.0:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
+
+    @classmethod
+    def from_args(cls, args, d_model, n_heads, head_dim):
+        """
+        Build a config from the argparse-style `args` of the presets and notebooks. The dynamics and noise
+        flags are shared with RFAConfig.from_args; DKA's own are dka_prior, dka_init_prior_weight,
+        dka_init_prior_var, dka_inflation and dka_learn_inflation. The S_bar calibration ("window") uses
+        the training length args.seq_len.
+        """
+        for name, default in _RFA_ONLY_ARGS.items():
+            if getattr(args, name, default) != default:
+                raise ValueError(f"args.{name}={getattr(args, name)!r} is an RFA ablation with no DKA counterpart.")
+        if getattr(args, "scale_decay_by_time_interval", False):
+            decay_scale = args.max_fixed_decay / (args.seq_len - 1)
+        else:
+            decay_scale = 1.0
+        use_sc = args.use_SC_RoPE
+        return cls(
+            d_model=d_model, n_heads=n_heads, head_dim=head_dim,
+            frequency_init="spectral" if use_sc else "rope",
+            decay_init="log_linear" if (args.use_log_linear_decay and not use_sc) else "spectral",
+            damping=args.damping,
+            zero_decay_frac=args.zero_frac,
+            decay_scale=decay_scale,
+            omega_rescale=args.omega_rescale,
+            learn_rotations=args.learn_rotations,
+            process_noise="steady_state" if args.use_ss_process_noise else "variance",
+            init_steady_state_var=args.target_ss_process_var,
+            init_measurement_var=args.target_measurement_var,
+            robust_weight=args.use_robust_weight,
+            prior=getattr(args, "dka_prior", "tokens"),
+            init_prior_weight=getattr(args, "dka_init_prior_weight", 1.0),
+            calibration_length=args.seq_len,
+            init_prior_var=getattr(args, "dka_init_prior_var", 1.0),
+            inflation=getattr(args, "dka_inflation", None),
+            learn_inflation=getattr(args, "dka_learn_inflation", True),
+            epsilon=args.epsilon,
+        )
+
+
+# RFA ablation flags (args name -> RFA default) that have no DKA counterpart
+_RFA_ONLY_ARGS = {"additive_bias_type": 1, "multiplicative_bias_type": 1, "use_full_residual_norm": 1,
+                  "rotate_values": True, "zero_rotations": False, "lambda_real_zero": False,
+                  "zero_process_noise": False, "zero_key_measurement_noise": False}

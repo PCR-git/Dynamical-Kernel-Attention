@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from dka import RFAConfig, MultiheadIsotropicRFA
+from dka import RFAConfig, DKAConfig, MultiheadIsotropicRFA, MultiheadIsotropicDKA
 from .config import AttentionConfig, BackboneConfig
 from .layers import MultiHeadAttentionLayer
 
@@ -8,9 +8,11 @@ NORMS = {"layer": nn.LayerNorm, "rms": nn.RMSNorm}
 
 
 def build_attention(config):
-    """RFA layer for an RFAConfig, baseline dot-product attention for an AttentionConfig."""
+    """RFA layer for an RFAConfig, DKA layer for a DKAConfig, baseline dot-product attention for an AttentionConfig."""
     if isinstance(config, RFAConfig):
         return MultiheadIsotropicRFA(config)
+    if isinstance(config, DKAConfig):
+        return MultiheadIsotropicDKA(config)
     if isinstance(config, AttentionConfig):
         return MultiHeadAttentionLayer(config)
     raise TypeError(f"Unknown attention config type {type(config).__name__}")
@@ -19,7 +21,7 @@ def build_attention(config):
 class Block(nn.Module):
     """
     Pre-norm residual block: x + attn(norm1(x)), then x + ffn(norm2(x)), with a ReLU feedforward network.
-    The attention is RFA or a baseline, depending on the type of config.attention.
+    The attention is RFA, DKA or a baseline, depending on the type of config.attention.
     """
 
     def __init__(self, config: BackboneConfig):

@@ -7,16 +7,21 @@ from tqdm import tqdm
 ##########################################################################################
 ##########################################################################################
 
-# Per-head RFA parameters logged to `history` (output-dict key -> history key)
+# Per-head RFA/DKA parameters logged to `history` (output-dict key -> history key); keys a layer does not
+# return are skipped (tau is RFA only; prior_weight c_h, zeta and the mean step are DKA only)
 _RFA_LOG_KEYS = {"mu_v": "mu", "sigma_sq_v": "sigma", "sigma_tilde_sq_v": "sigma_tilde",
-                 "eta_sq_v": "eta", "gamma_sq_v": "gamma", "tau": "tau", "nu_over_d": "nu_over_d"}
+                 "eta_sq_v": "eta", "gamma_sq_v": "gamma", "tau": "tau", "nu_over_d": "nu_over_d",
+                 "prior_weight": "prior_weight", "zeta": "zeta", "step_mean": "step"}
+_PER_BLOCK_KEYS = ("prior_weight", "zeta", "step_mean")   # logged for every block, [n_blocks, H]; the rest last block, [H]
 
 
 def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=None, log_every=100):
     """
     One epoch of next-token language-model training (RFA or baseline backbone).
-    Appends the loss of every step to history['loss'], and for RFA models, every `log_every`
-    steps, the per-head SDE parameters of the last block (history['mu'], ['sigma'], ...).
+    Appends the loss of every step to history['loss'], and for RFA/DKA models, every `log_every`
+    steps, the per-head parameters of the last block (history['mu'], ['sigma'], ..., [H] arrays as the
+    plotting code expects); for DKA also c_h, zeta and the mean step of every block (history['prior_weight'],
+    ['zeta'], ['step'], [n_blocks, H] arrays).
     """
     model.train()
     output_dict = None
@@ -39,10 +44,16 @@ def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=Non
             pbar.set_postfix({"loss": f"{history['loss'][-1]:.4f}"})
 
         # Backbone returns one info dict per block; the notebooks' RFATransformerNetwork only the last one
-        info = output_dict[-1] if isinstance(output_dict, list) else output_dict
-        if it % log_every == 0 and isinstance(info, dict) and "mu_v" in info:
+        infos = output_dict if isinstance(output_dict, list) else [output_dict]
+        if it % log_every == 0 and isinstance(infos[-1], dict) and "mu_v" in infos[-1]:
             for key, hist_key in _RFA_LOG_KEYS.items():
-                history.setdefault(hist_key, []).append(info[key].detach().cpu().numpy())
+                if key not in infos[-1]:
+                    continue
+                if key in _PER_BLOCK_KEYS:
+                    value = torch.stack([info[key].detach() for info in infos])
+                else:
+                    value = infos[-1][key].detach()
+                history.setdefault(hist_key, []).append(value.cpu().numpy())
 
     return output_dict, history
 

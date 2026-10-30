@@ -1,15 +1,16 @@
 """
 Model constructors that take the notebook-style `args` namespace (paper notebooks, presets, tests).
 
-Each translates `args` into typed configs (RFAConfig / AttentionConfig / BackboneConfig) once, at
-construction, and keeps the call signature and return format of the original class. New code should
-build Backbone(BackboneConfig(...)) directly.
+Each translates `args` into typed configs (RFAConfig / DKAConfig / AttentionConfig / BackboneConfig) once,
+at construction, and keeps the call signature and return format of the original class. New code should
+build Backbone(BackboneConfig(...)) directly. With args.attention_type = "dka", the RFA constructors build
+DKA layers instead (same args for the dynamics and noise).
 """
 
 import torch.nn as nn
 
-from dka import RFAConfig, MultiheadIsotropicRFA
-from .blocks import Block
+from dka import RFAConfig, DKAConfig
+from .blocks import Block, build_attention
 from .config import AttentionConfig, BackboneConfig
 from .layers import MultiHeadAttentionLayer
 from .model_utils import resolve_multihead_dims
@@ -43,7 +44,11 @@ def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim
                                                                 query_key_dim_total, value_dim_total)
     if query_key_dim != value_dim:
         raise ValueError(f"RFA requires equal query/key and value head dims, got {query_key_dim} and {value_dim}")
-    return RFAConfig.from_args(args, d_model=input_dim, n_heads=n_heads, head_dim=query_key_dim)
+    attention_type = getattr(args, "attention_type", "rfa")
+    if attention_type not in ("rfa", "dka"):
+        raise ValueError(f"args.attention_type must be 'rfa' or 'dka', got {attention_type!r}")
+    Config = DKAConfig if attention_type == "dka" else RFAConfig
+    return Config.from_args(args, d_model=input_dim, n_heads=n_heads, head_dim=query_key_dim)
 
 
 def rfa_backbone_config(args, attention, n_blocks, hidden_dim, Norm, io_projections=True):
@@ -56,9 +61,9 @@ def rfa_backbone_config(args, attention, n_blocks, hidden_dim, Norm, io_projecti
 
 
 def build_rfa_layer(args, n_heads, input_dim, query_key_dim=None, value_dim=None, query_key_dim_total=None, value_dim_total=None):
-    """Build a MultiheadIsotropicRFA layer from notebook-style `args` and head dimensions."""
-    return MultiheadIsotropicRFA(rfa_config_from_args(args, n_heads, input_dim, query_key_dim, value_dim,
-                                                      query_key_dim_total, value_dim_total))
+    """Build a MultiheadIsotropicRFA (or, with args.attention_type = "dka", DKA) layer from `args` and head dimensions."""
+    return build_attention(rfa_config_from_args(args, n_heads, input_dim, query_key_dim, value_dim,
+                                                query_key_dim_total, value_dim_total))
 
 
 ##########################################################################################

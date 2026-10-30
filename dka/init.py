@@ -9,6 +9,12 @@ def inv_softplus(x):
     return torch.log(torch.expm1(x) + 1e-6)
 
 
+def inv_softplus_exact(x):
+    """Exact inverse of softplus, also for tiny x (inv_softplus's +1e-6 is kept for RFA's checkpoints)."""
+    x = torch.as_tensor(x, dtype=torch.get_default_dtype())
+    return x + torch.log(-torch.expm1(-x))
+
+
 def init_complex_matrix(d_in, d_out):
     """Isotropic complex init: random magnitude, uniform phase. Returns (2, d_in, d_out)."""
     scale = np.sqrt(2 / (d_in + d_out))
