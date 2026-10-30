@@ -26,7 +26,7 @@ C128 = torch.complex128
 
 
 def close(a, b, tol=1e-9):
-    a, b = torch.as_tensor(a), torch.as_tensor(b)
+    a, b = (x if torch.is_tensor(x) else torch.tensor(x, dtype=torch.float64) for x in (a, b))
     err = (a - b).abs().max().item()
     assert err <= tol, f"max abs error {err:.3e} > {tol:.1e}"
 

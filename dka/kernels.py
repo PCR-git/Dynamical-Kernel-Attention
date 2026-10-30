@@ -1,5 +1,5 @@
 """
-Pure functions implementing the Isotropic RFA computations.
+Pure functions implementing the Isotropic RFA and DKA computations.
 
 Layout conventions:
     complex vectors     [..., D, 2]   (last dim = real, imaginary)
@@ -7,6 +7,7 @@ Layout conventions:
 """
 
 import torch
+import torch.nn.functional as F
 
 
 def rotate(x, cos, sin):
@@ -85,3 +86,89 @@ def robust_logits(R_sq, Sigma, nu, d, robust_weight=True, dle_bias=True, dle_gat
             kappa = (nu + d) / d
         return bias - kappa * torch.log(1 + gate * R_sq)
     return bias - gate * R_sq
+
+
+# ---------------------------------------------------------------------------------------------------
+# DKA (Dynamical_Kernel_Attention.tex)
+# ---------------------------------------------------------------------------------------------------
+
+def _one_minus_exp_ratio(x):
+    """(1 - e^{-x}) / x for x >= 0, with its limit 1 at x = 0."""
+    small = x < 1e-4
+    x_safe = torch.where(small, torch.ones_like(x), x)
+    return torch.where(small, 1 - x / 2 + x * x / 6, -torch.expm1(-x_safe) / x_safe)
+
+
+def forcing_variance(mu, sigma_sq, lags):
+    """
+    Variance of the forcing accumulated over a lag (the DLE solution, Eq. 3):
+
+        V(dt) = sigma^2 (1 - e^{-2 mu dt}) / (2 mu) = v_inf (1 - E^2),
+
+    computed as sigma^2 dt (1 - e^{-x}) / x with x = 2 mu dt, which is stable for all mu >= 0 and tends to
+    the Brownian sigma^2 dt as mu -> 0. mu, sigma_sq: [H]; lags: [..., 1]. Returns [..., H].
+    """
+    return sigma_sq * lags * _one_minus_exp_ratio(2 * mu * lags)
+
+
+def inflation_terms(theta, mu, lags):
+    """
+    Observation coefficient h and noise coefficient c of a transported token (Appendix F).
+
+    The past state's prior variance is inflated from v_inf to v_inf + m, with zeta = m / (v_inf + m) =
+    sigmoid(theta):
+        log h = log sigmoid(theta - 2 mu dt) - log sigmoid(theta),   c = sigmoid(-theta) + sigmoid(theta) E^2,
+    so h = E^2 / c. theta=None is DKA's stationary prior (zeta = 0): log h = -2 mu dt and c = 1.
+    theta -> +inf gives RFA's flat prior (h = 1, c = E^2).
+
+    theta, mu: [H]; lags: [..., 1]. Returns (log_h [..., H], c [..., H] or the float 1.0).
+    """
+    two_mu_dt = 2 * mu * lags
+    if theta is None:
+        return -two_mu_dt, 1.0
+    log_h = F.logsigmoid(theta - two_mu_dt) - F.logsigmoid(theta)
+    c = torch.sigmoid(-theta) + torch.sigmoid(theta) * torch.exp(-two_mu_dt)
+    return log_h, c
+
+
+def dka_covariance(mu, sigma_sq, eta_sq, lags, c=1.0):
+    """
+    Sigma_n = V(dt) + c eta^2 (Eq. 14; Sigma_zeta of Appendix F when c != 1). The covariance of the
+    transported measurement is h Sigma_n, and the factor h cancels from the Mahalanobis distance.
+    Unlike RFA's covariance, the measurement noise eta^2 is not decayed and there is no floor gamma^2.
+    """
+    return forcing_variance(mu, sigma_sq, lags) + c * eta_sq
+
+
+def dka_residual_norm_sq(Q_rot, K_rot, E, h, c=1.0):
+    """
+    Squared key-frame residual, |E K_j - h Q_i|^2 / h in the rotated frame:
+
+        c ||K_j||^2 + h ||Q_i||^2 - 2 E Re<Q~_i, K~_j>        (c = E^2 / h),
+
+    which without inflation (h = E^2, c = 1) is ||K~_j - E Q~_i||^2 (Eq. 16): the key compared with the
+    backward conditional mean E Q~_i. Divided by Sigma_n it is the squared Mahalanobis distance d_ij^2.
+    The query and key swap roles relative to RFA's ||Q~_i - E K~_j||^2.
+
+    Q_rot, K_rot: [B, N, H, D, 2]; E, h, c: [B|1, N, N, H]. Returns [B, N, N, H], clamped at 0 against
+    round-off in the expansion.
+    """
+    cross = 2 * E * torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    q_sq = Q_rot.pow(2).sum(dim=(-1, -2))[:, :, None, :]
+    k_sq = K_rot.pow(2).sum(dim=(-1, -2))[:, None, :, :]
+    return (c * k_sq + h * q_sq - cross).clamp_min(0)
+
+
+def calibrated_evidence(mu, sigma_sq, eta_sq, length, theta=None):
+    """
+    S_bar: the evidence S_i a head gathers with unit robust weights when every token of a context of
+    `length` unit-spaced tokens agrees with the query (Appendix G), computed exactly as the sum
+
+        S_bar = sum_{dt=0}^{length-1} h(dt) / Sigma_n(dt).
+
+    Over a finite context it is finite for slow and zero-decay heads too. Used to calibrate the proximal
+    prior, gamma^-2 = c_h S_bar. mu, sigma_sq, eta_sq, theta: [H]. Returns [H].
+    """
+    lags = torch.arange(length, dtype=mu.dtype, device=mu.device)[:, None]
+    log_h, c = inflation_terms(theta, mu, lags)
+    return (torch.exp(log_h) / dka_covariance(mu, sigma_sq, eta_sq, lags, c)).sum(0)
