@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -103,3 +103,57 @@ class RFAConfig:
             min_exponent=args.min_exponent,
             max_exponent=args.max_exponent,
         )
+
+
+@dataclass(frozen=True)
+class DKAConfig:
+    """
+    Configuration of a multi-head Isotropic DKA layer (Dynamical_Kernel_Attention.tex, Algorithm 1).
+
+    Shapes as in RFAConfig: each head works in a complex space of dimension head_dim, so the projections
+    map d_model -> 2 * n_heads * head_dim.
+    """
+
+    d_model: int
+    n_heads: int
+    head_dim: int
+
+    # --- Dynamics: eigenvalues lambda_k = -mu + i*omega_k (per head); as in RFAConfig ---
+    frequency_init: Literal["rope", "spectral"] = "spectral"  # "spectral" = SC-DKA
+    decay_init: Literal["spectral", "log_linear"] = "spectral"  # "spectral": mu_h = damping * omega_h,max
+    damping: float = 0.05
+    zero_decay_frac: float = 0.0     # DKA uses slow heads rather than mu = 0 (the mu = 0 path is supported)
+    decay_scale: float = 1.0
+    omega_rescale: float = 1.0
+    learn_rotations: bool = False
+
+    # --- Noise model ---
+    # "variance":     learn the forcing per unit time sigma^2 (v_inf = sigma^2 / (2 mu))
+    # "steady_state": learn the stationary variance v_inf (sigma^2 for mu = 0 heads), as in Algorithm 1
+    process_noise: Literal["variance", "steady_state"] = "variance"
+    init_steady_state_var: float = 0.1   # initial v_inf (in "variance" mode sigma^2 = 2 mu v_inf, equal rho across heads)
+    init_measurement_var: float = 1.0
+    init_nu_over_d: float = 4.0
+
+    # --- Attention weights ---
+    robust_weight: bool = True       # Student-t (power-law) weight; False = exponential weight
+
+    # --- Proximal prior on the current estimate (the null slot) ---
+    # "calibrated": gamma^-2 = c_h * S_bar_h with learned log c_h (Appendix G); "direct": learn gamma^2
+    prior: Literal["calibrated", "direct"] = "calibrated"
+    calibration_length: int = 512    # context length over which S_bar is summed (the training length)
+    init_log_c: float = 0.0          # c_h = 1: when all tokens agree, the null slot takes half the weight
+    init_prior_var: float = 1.0      # initial gamma^2 for prior="direct"
+
+    # --- Variance inflation (Appendix F): None = DKA's stationary prior; zeta in [0, 1) = initial inflation ---
+    inflation: Optional[float] = None
+    learn_inflation: bool = True
+
+    # --- Numerics ---
+    epsilon: float = 1e-5
+
+    def __post_init__(self):
+        if self.head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
+        if self.inflation is not None and not 0.0 <= self.inflation < 1.0:
+            raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
