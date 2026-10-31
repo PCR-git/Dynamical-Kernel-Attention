@@ -147,6 +147,7 @@ lm = LanguageModel(backbone, vocab_size=50257, embed_dim=256)
 python train_lm.py --dataset wikitext103 --preset D3 --compile
 python train_lm.py --dataset wikitext103 --preset D2 --set damping=0.5     # override any args field
 python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/D3__<date>   # test perplexity at L = 512 ... 4096
+python eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
 ```
 
 Each run writes to `<out-dir>/<dataset>/<name>__<date>/` (`--out-dir` defaults to `$DKA_RUNS_DIR`, else `./runs`):
@@ -200,7 +201,7 @@ dka/
 ├── model/                # Backbone, LanguageModel; baselines/ holds the baseline attention (presets B1-B9)
 ├── training/             # training loops, datasets, presets
 └── utils/
-train_lm.py, eval_extrapolation.py, download_data.py, dynamics_compare.py
+train_lm.py, eval_extrapolation.py, eval_eviction.py, download_data.py, dynamics_compare.py
 dynamics/, visualization/, figures/, *.ipynb   # simulators, plots and research notebooks from the RFA paper
 tests/
 ```
