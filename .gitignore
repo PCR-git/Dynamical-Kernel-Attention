@@ -8,7 +8,6 @@ __pycache__/
 # Data, caches and training outputs (large; not versioned)
 datasets/
 hf_cache/
-gpt2_tokenizer/
 saved_models/
 runs/
 *.pt

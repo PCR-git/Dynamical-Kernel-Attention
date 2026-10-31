@@ -1,6 +1,7 @@
 # Dynamical Kernel Attention (DKA)
 
-Code for *Dynamical Kernel Attention: Estimating the Present from a Record of the Past* (Peter Racioppo, 2026).
+Code for [*Dynamical Kernel Attention: Estimating the Present from a Record of the Past*](https://arxiv.org/abs/2610.24026)
+(Peter Racioppo, 2026).
 
 Standard self-attention compares tokens by similarity but does not account for how much of a past state survives
 to the present. DKA derives attention from robust estimation of a latent state evolving under stochastic dynamics.
@@ -85,11 +86,12 @@ pip install -e .                  # makes `dka` importable from other projects
 ## Data
 
 ```
-python download_data.py           # WikiText-103 -> datasets/wikitext-103/, GPT-2 tokenizer -> gpt2_tokenizer/
+python download_data.py           # WikiText-103 -> datasets/wikitext-103/
 ```
 
 This fetches the WikiText-103 parquet files from Hugging Face (`Salesforce/wikitext`, `wikitext-103-v1`, about
-300 MB) and saves the GPT-2 tokenizer. BabyLM 2025 (used for some RFA results) is not downloaded automatically; place
+300 MB). The GPT-2 tokenizer is included in `gpt2_tokenizer/`. If Hugging Face is not reachable, download the four
+files of `wikitext-103-v1` from the dataset page by other means and put them in `datasets/wikitext-103/`. BabyLM 2025 (used for some RFA results) is not downloaded automatically; place
 its 100M-word corpus at `datasets/BabyLM_2025/{train_100M,dev,test}/`.
 
 ---
@@ -214,10 +216,12 @@ MIT (see `LICENSE`).
 
 ```bibtex
 @misc{racioppo2026dka,
-  title  = {Dynamical Kernel Attention: Estimating the Present from a Record of the Past},
-  author = {Racioppo, Peter},
-  year   = {2026},
-  note   = {Preprint}
+  title         = {Dynamical Kernel Attention: Estimating the Present from a Record of the Past},
+  author        = {Racioppo, Peter},
+  year          = {2026},
+  eprint        = {2610.24026},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2610.24026}
 }
 
 @inproceedings{racioppo2026rfa,
