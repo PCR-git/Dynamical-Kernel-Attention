@@ -115,7 +115,7 @@ def get_model_sde_snapshots(model):
                 "gamma_sq": summary["gamma_sq_v"].cpu().numpy(),
                 "nu_over_d": summary["nu_over_d"].cpu().numpy(),
             }
-            for key in ("tau", "prior_weight", "zeta"):
+            for key in ("tau", "prior_weight", "zeta", "saturation"):
                 if key in summary:
                     snapshot[f"layer_{layer_idx}"][key] = summary[key].cpu().numpy()
     return snapshot

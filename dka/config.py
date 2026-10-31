@@ -158,10 +158,19 @@ class DKAConfig:
     inflation: Optional[float] = None
     learn_inflation: bool = True
 
+    # --- Evidence saturation (R12): None = tokens are independent measurements, S_i = sum_j a_ij h_ij ---
+    # A float n_sat > 0 models a measurement error shared by all tokens (equicorrelation rho ~ 1 / n_sat), so the
+    # information saturates, S_eff = S / (1 + S / S_max) with S_max = n_sat / eta^2 (n_sat agreeing tokens at lag 0).
+    # The estimate M / S is unchanged; the step tends to n_sat / (c_h + n_sat) instead of 1 as evidence piles up.
+    saturation: Optional[float] = None
+    learn_saturation: bool = True
+
     # --- Numerics ---
     epsilon: float = 1e-5
 
     def __post_init__(self):
+        if self.saturation is not None and not self.saturation > 0:
+            raise ValueError(f"saturation must be positive, got {self.saturation}")
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
         if self.inflation is not None and not 0.0 <= self.inflation < 1.0:
@@ -172,7 +181,7 @@ class DKAConfig:
         """
         Build a config from the argparse-style `args` of the presets and notebooks. The dynamics and noise
         flags are shared with RFAConfig.from_args; DKA's own are dka_prior, dka_init_prior_weight,
-        dka_init_prior_var, dka_inflation and dka_learn_inflation. The S_bar calibration ("window") uses
+        dka_init_prior_var, dka_inflation, dka_learn_inflation, dka_saturation and dka_learn_saturation. The S_bar calibration ("window") uses
         the training length args.seq_len.
         """
         for name, default in _RFA_ONLY_ARGS.items():
@@ -202,6 +211,8 @@ class DKAConfig:
             init_prior_var=getattr(args, "dka_init_prior_var", 1.0),
             inflation=getattr(args, "dka_inflation", None),
             learn_inflation=getattr(args, "dka_learn_inflation", True),
+            saturation=getattr(args, "dka_saturation", None),
+            learn_saturation=getattr(args, "dka_learn_saturation", True),
             epsilon=args.epsilon,
         )
 

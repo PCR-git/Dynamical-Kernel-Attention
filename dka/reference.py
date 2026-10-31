@@ -82,7 +82,7 @@ def student_t_weight(d2, nu, d):
     return (1 + d2 / nu) ** (-(nu + d) / d)
 
 
-def dka_update(Xq, Xk, Xv, t, A, Q, R, U, nu, inflation=0.0):
+def dka_update(Xq, Xk, Xv, t, A, Q, R, U, nu, inflation=0.0, saturation=None):
     """
     One DKA layer for a single head, literally per Eqs. 9-10 with p = 1 (absorbed into U).
 
@@ -93,6 +93,10 @@ def dka_update(Xq, Xk, Xv, t, A, Q, R, U, nu, inflation=0.0):
         weights:  r_ij = Phi Xk_j - H Xq_i,   d_ij^2 = r^dagger Sigma^{-1} r,   w_ij = (1 + d^2/nu)^-kappa
         update:   dV_i = (U^{-1} + J_i)^{-1} sum_j w_ij H^dagger P (Phi Xv_j - H Xv_i),
                   J_i  = sum_j w_ij H^dagger P H.
+
+    With saturation = S_max (a scalar precision), a measurement error shared by all tokens discounts the information
+    to J_eff = J (I + J / S_max)^-1 and the step becomes dV_i = (U^{-1} + J_eff)^{-1} J_eff J^{-1} g_i, i.e. the
+    same estimate J^{-1} g with a smaller gain.
 
     Returns dict with dV [N, d], weights w [N, N] (0 above the diagonal), information J [N, d, d].
     """
@@ -112,7 +116,12 @@ def dka_update(Xq, Xk, Xv, t, A, Q, R, U, nu, inflation=0.0):
             HP = _H(H) @ P
             g = g + w[i, j] * HP @ (Phi @ Xv[j] - H @ Xv[i])
             J[i] = J[i] + w[i, j] * HP @ H
-        dV[i] = torch.linalg.solve(U_inv + J[i], g)
+        if saturation is None:
+            dV[i] = torch.linalg.solve(U_inv + J[i], g)
+        else:
+            I = torch.eye(d, dtype=Xq.dtype)
+            J_eff = J[i] @ torch.linalg.inv(I + J[i] / saturation)
+            dV[i] = torch.linalg.solve(U_inv + J_eff, J_eff @ torch.linalg.solve(J[i], g))
     return dict(dV=dV, w=w, J=J)
 
 

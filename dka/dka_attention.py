@@ -35,6 +35,7 @@ class MultiheadIsotropicDKA(nn.Module):
         log_c      prior="tokens": gamma^-2 = exp(log_c) / eta^2; prior="window": gamma^-2 = exp(log_c) * S_bar
         gamma_raw  prior="direct": gamma^2 = softplus(gamma_raw) + eps
         theta      inflation zeta = sigmoid(theta) (only if config.inflation is not None)
+        log_n_sat  evidence saturation, S_max = n_sat / eta^2 (only if config.saturation is not None)
     """
 
     def __init__(self, config: DKAConfig):
@@ -88,6 +89,16 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             self.theta = None
 
+        # --- Evidence saturation (shared measurement error) ---
+        if c.saturation is not None:
+            log_n_sat = torch.full((H,), math.log(c.saturation))
+            if c.learn_saturation:
+                self.log_n_sat = nn.Parameter(log_n_sat)
+            else:
+                self.register_buffer("log_n_sat", log_n_sat)
+        else:
+            self.log_n_sat = None
+
         init_complex_linear_(self.W_q, init_complex_matrix(c.d_model, width), "in")
         init_complex_linear_(self.W_k, init_complex_matrix(c.d_model, width), "in")
         init_complex_linear_(self.W_v, init_complex_matrix(c.d_model, width), "in")
@@ -98,7 +109,8 @@ class MultiheadIsotropicDKA(nn.Module):
     def sde_params(self):
         """
         Constrained per-head parameters: dict of [H] tensors (omega is [H, head_dim]). sigma_sq is always the
-        forcing per unit time, whichever quantity is learned; log_prior_precision is log gamma^-2.
+        forcing per unit time, whichever quantity is learned; log_prior_precision is log gamma^-2;
+        log_saturation is log S_max (None without saturation).
         """
         c = self.config
         mu = self.mu
@@ -114,8 +126,9 @@ class MultiheadIsotropicDKA(nn.Module):
             log_prior_precision = self.log_c + torch.log(S_bar)
         else:
             log_prior_precision = -torch.log(F.softplus(self.gamma_raw) + c.epsilon)
+        log_saturation = None if self.log_n_sat is None else self.log_n_sat - torch.log(eta_sq)
         return dict(mu=mu, omega=omega, sigma_sq=sigma_sq, eta_sq=eta_sq, nu=nu, theta=self.theta,
-                    log_prior_precision=log_prior_precision)
+                    log_prior_precision=log_prior_precision, log_saturation=log_saturation)
 
     def _project_in(self, W, Z):
         B, N, _ = Z.shape
@@ -171,19 +184,26 @@ class MultiheadIsotropicDKA(nn.Module):
         A = torch.exp(logits - m[:, :, None, :])
         null = torch.exp(null_logit - m)                                        # gamma^-2 e^{-m}
         S = (A * h).sum(dim=2)                                                  # information e^{-m} S_i
+        if p["log_saturation"] is None:
+            S_eff = S
+        else:                                                                   # S / (1 + S / S_max), scaled by e^{-m}
+            S_eff = S / (1 + S * torch.exp(m - p["log_saturation"]))
 
         # --- Aggregate decayed values, counter-rotate (Phi^+), proximal innovation ---
         A_hat = A * E
         M = rotate(torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot), cos, sin)
-        denom = null + S                                                        # e^{-m} (gamma^-2 + S_i)
-        dV = (M - S[..., None, None] * V) / denom[..., None, None]
+        if p["log_saturation"] is not None:                                     # same estimate M / S, discounted step
+            A_hat = A_hat * (S_eff / S)[:, :, None, :]
+            M = M * (S_eff / S)[..., None, None]
+        denom = null + S_eff                                                    # e^{-m} (gamma^-2 + S_eff_i)
+        dV = (M - S_eff[..., None, None] * V) / denom[..., None, None]
 
         out = self.W_o(dV.permute(0, 1, 4, 2, 3).reshape(B, N, -1))   # [re heads..., im heads...]
 
         info = self._param_summary(p)
-        info["step_mean"] = (S / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
+        info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
         if return_metadata:
-            info.update(self._metadata(p, A_hat, null, S, m, denom, dV))
+            info.update(self._metadata(p, A_hat, null, S, S_eff, m, denom, dV))
         return out, info
 
     # ------------------------------------------------------------------
@@ -200,23 +220,26 @@ class MultiheadIsotropicDKA(nn.Module):
             summary["prior_weight"] = torch.exp(self.log_c)
         if p["theta"] is not None:
             summary["zeta"] = torch.sigmoid(p["theta"])
+        if self.log_n_sat is not None:
+            summary["saturation"] = torch.exp(self.log_n_sat)
         return summary
 
-    def _metadata(self, p, A_hat, null, S, m, denom, dV):
+    def _metadata(self, p, A_hat, null, S, S_eff, m, denom, dV):
         """
         Diagnostics. The update is dV_i = sum_j attn[i, j] Phi+_i V~_j - step_i V_i with attn = A_hat / denom
-        and step = S / denom; 1 - step is the share of the null slot (abstention).
+        and step = S_eff / denom; 1 - step is the share of the null slot (abstention). Without saturation S_eff = S.
         """
         D = self.config.head_dim
         H = p["mu"].shape[0]
         eigenvals = torch.stack([-p["mu"][:, None].expand(H, D), p["omega"]]).reshape(2, 1, H * D, 1)
         return {
             "attn_mat": A_hat / denom[:, :, None, :],  # weight of each (counter-rotated) value [B, N, N, H]
-            "step": S / denom,                       # S_i / (gamma^-2 + S_i), the gain [B, N, H]
+            "step": S_eff / denom,                   # S_eff_i / (gamma^-2 + S_eff_i), the gain [B, N, H]
             "null_share": null / denom,              # 1 - step
             "log_evidence": torch.log(S) + m,        # log S_i, the information from the context [B, N, H]
             "P_tot": torch.log(S) + m,               # (same, under RFA's key for the plotting code)
-            "posterior_var": torch.exp(-m) / denom,  # 1 / (gamma^-2 + S_i)
+            "log_evidence_eff": torch.log(S_eff) + m,  # log S_eff_i, after saturation (= log_evidence without it)
+            "posterior_var": torch.exp(-m) / denom,  # 1 / (gamma^-2 + S_eff_i)
             "dV": dV,                                # innovation in the eigenbasis [B, N, H, D, 2]
             "eigenvals": eigenvals,
         }

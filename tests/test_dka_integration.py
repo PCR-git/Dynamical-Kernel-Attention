@@ -24,7 +24,7 @@ from dka.model import (Backbone, BackboneConfig, LanguageModel, RFATransformerNe
 from dka.training import single_epoch_lm
 from dka.training.presets import make_args, build_backbone, build_language_model
 
-DKA_PRESETS = ("D1", "D2", "D3", "D2.Z", "D3.Z")
+DKA_PRESETS = ("D1", "D2", "D3", "D2.Z", "D3.Z", "D2.S", "D3.S")
 
 
 def small(preset, **kw):
@@ -38,7 +38,8 @@ def attn_layers(model):
 
 def test_presets_build_dka():
     """The D presets build DKA layers with the intended settings: no zero-decay heads, the per-token prior,
-    calibration over the training length, SC decays mu = b omega_max, inflation in the .Z variants."""
+    calibration over the training length, SC decays mu = b omega_max, inflation in the .Z variants and evidence
+    saturation in the .S variants."""
     for preset in DKA_PRESETS:
         args = small(preset)
         net = build_backbone(args)
@@ -49,6 +50,7 @@ def test_presets_build_dka():
         assert torch.allclose(v_inf, torch.full_like(v_inf, args.target_ss_process_var), rtol=1e-4), (preset, v_inf)
         assert c.zero_decay_frac == 0 and c.prior == "tokens" and c.calibration_length == 64, preset
         assert (c.inflation == 0.5) == preset.endswith(".Z") and (layers[0].theta is not None) == preset.endswith(".Z")
+        assert (c.saturation == 1.0) == preset.endswith(".S") and (layers[0].log_n_sat is not None) == preset.endswith(".S")
         if preset != "D1":
             _, mu = init_spectrally_coupled_rope(4, 4, b=args.damping, zero_frac=0.0)
             assert torch.allclose(layers[0].mu, mu) and c.frequency_init == "spectral", preset
@@ -135,18 +137,20 @@ def test_chunked_loss_and_checkpointing_are_exact():
 
 
 def test_training_logs():
-    """single_epoch_lm logs c_h, zeta and the mean step of every block for DKA; RFA's history is unchanged."""
+    """single_epoch_lm logs c_h, zeta or n_sat and the mean step of every block for DKA; RFA's history is unchanged."""
     ids = torch.randint(0, 100, (2, 16))
     batches = [{"input_ids": ids, "labels": ids}] * 3
-    for preset in ("D2.Z", "M2"):
+    for preset in ("D2.Z", "D2.S", "M2"):
         args = small(preset, vocab_size=100)
         lm = build_language_model(args)
         opt = torch.optim.Adam(lm.parameters(), lr=1e-3)
         _, hist = single_epoch_lm(lm, batches, {"loss": []}, opt, args, log_every=1)
         assert len(hist["loss"]) == 3 and len(hist["mu"]) == 3 and hist["mu"][0].shape == (4,)
-        if preset == "D2.Z":
+        if preset != "M2":
             assert "tau" not in hist
-            for key in ("prior_weight", "zeta", "step"):
+            extra = "zeta" if preset == "D2.Z" else "saturation"
+            assert ("zeta" in hist) == (preset == "D2.Z") and ("saturation" in hist) == (preset == "D2.S")
+            for key in ("prior_weight", extra, "step"):
                 assert len(hist[key]) == 3 and hist[key][0].shape == (2, 4), key
             assert ((hist["step"][0] > 0) & (hist["step"][0] < 1)).all()
             assert not (hist["prior_weight"][0] == hist["prior_weight"][-1]).all()   # c_h is trained
@@ -171,7 +175,7 @@ def test_compiled_matches_eager():
     if not torch.cuda.is_available():
         print("  (no GPU, skipped)")
         return
-    for preset in ("D2", "D2.Z"):
+    for preset in ("D2", "D2.Z", "D2.S"):
         torch.manual_seed(0)
         eager = build_language_model(small(preset, vocab_size=100)).cuda()
         comp = copy.deepcopy(eager)

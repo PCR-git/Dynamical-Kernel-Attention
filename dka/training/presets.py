@@ -49,6 +49,8 @@ BASE_ARGS = dict(
     dka_init_prior_var=1.0,           # initial gamma^2 for dka_prior="direct"
     dka_inflation=None,               # None = stationary prior; zeta in [0, 1) = initial variance inflation (App. F)
     dka_learn_inflation=True,
+    dka_saturation=None,              # None = independent tokens; n_sat > 0 = evidence saturates at n_sat / eta^2 (R12)
+    dka_learn_saturation=True,
 
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False,
@@ -101,6 +103,9 @@ PRESETS = {
     # Variance inflation (App. F), learned from zeta = 0.5
     "D2.Z": dict(_DKA, **_SC, damping=0.05, dka_inflation=0.5),
     "D3.Z": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_inflation=0.5),
+    # Evidence saturation (R12), learned from n_sat = 1 (D2's evidence within 512 tokens is ~0.1-1 agreeing tokens)
+    "D2.S": dict(_DKA, **_SC, damping=0.05, dka_saturation=1.0),
+    "D3.S": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_saturation=1.0),
 }
 
 

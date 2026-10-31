@@ -52,6 +52,8 @@ def make_layer(seed=0, mu=(0.08, 0.3, 0.7), **kw):
             layer.gamma_raw.copy_(rnd(-0.5, 1.5))
         if layer.theta is not None:
             layer.theta.copy_(rnd(-2.0, 2.0))
+        if layer.log_n_sat is not None:
+            layer.log_n_sat.copy_(rnd(-1.5, 1.0))
     return layer
 
 
@@ -69,7 +71,7 @@ def inputs(B=2, N=6, seed=1, irregular=True):
 def test_matches_reference():
     """dV of the layer equals the literal per-pair update of Eqs. 9-10 (dka.reference.dka_update), per head."""
     for kw in (dict(), dict(inflation=0.3), dict(prior="direct"), dict(prior="window"),
-               dict(process_noise="steady_state", inflation=0.6)):
+               dict(process_noise="steady_state", inflation=0.6), dict(saturation=1.0), dict(saturation=1.0, inflation=0.3)):
         layer = make_layer(**kw)
         x, t = inputs()
         _, meta = layer(x, t_measure=t, return_metadata=True)
@@ -81,8 +83,10 @@ def test_matches_reference():
                 A = torch.diag(torch.complex(torch.full((D,), -mu, dtype=F64), p["omega"][h]))
                 I = torch.eye(D, dtype=C128)
                 m = 0.0 if p["theta"] is None else s2 / (2 * mu) * math.exp(p["theta"][h].item())
+                s_max = None if p["log_saturation"] is None else math.exp(p["log_saturation"][h].item())
                 ref = dka_update(Xq[b, :, h], Xk[b, :, h], Xv[b, :, h], t[b], A, s2 * I, p["eta_sq"][h].item() * I,
-                                 math.exp(-p["log_prior_precision"][h].item()) * I, p["nu"][h].item(), inflation=m)
+                                 math.exp(-p["log_prior_precision"][h].item()) * I, p["nu"][h].item(), inflation=m,
+                                 saturation=s_max)
                 close(cplx(meta["dV"][b, :, h]), ref["dV"], 1e-10)
 
 
@@ -121,6 +125,47 @@ def test_prior_counts_tokens():
     _, meta = layer(inputs(N=1)[0], return_metadata=True)
     step = meta["step"][0, 0]
     assert step[0] < 0.5 * step[2] and step[0] < step[1] < step[2], step
+
+
+def test_evidence_saturation():
+    """
+    R12: with saturation n_sat the information is S_eff = S / (1 + S eta^2 / n_sat), the estimate is unchanged and
+    the step S_eff / (gamma^-2 + S_eff) tends to n_sat / (c_h + n_sat) as agreeing tokens pile up (without saturation
+    it tends to 1); a huge n_sat recovers the layer without saturation.
+    """
+    x, t = inputs(N=8)
+    plain = make_layer(inflation=0.3)
+    huge = make_layer(inflation=0.3, saturation=1.0)
+    with torch.no_grad():
+        huge.log_n_sat.fill_(60.0)
+    close(huge(x, t_measure=t)[0], plain(x, t_measure=t)[0], 1e-12)
+
+    # N identical tokens in slow heads with no rotation and tiny process noise: every token agrees
+    N = 400
+    z = torch.randn(1, 1, D_MODEL, dtype=F64).expand(1, N, D_MODEL)
+    for sat in (None, 2.0):
+        layer = make_layer(mu=(1e-7, 1e-6, 1e-5), saturation=sat)
+        with torch.no_grad():
+            layer.W_k.load_state_dict(layer.W_q.state_dict())
+            layer.omega.zero_()
+            layer.sigma_raw.fill_(-30.0)
+            if sat is not None:
+                layer.log_n_sat.fill_(math.log(sat))
+        _, meta = layer(z, return_metadata=True)
+        p = layer.sde_params()
+        c_h = torch.exp(layer.log_c)
+        x_tok = torch.exp(meta["log_evidence"][0]) * p["eta_sq"]              # evidence in agreeing lag-0 tokens
+        close(x_tok[-1], torch.full((H,), float(N), dtype=F64), 0.01 * N)
+        s_eff = x_tok if sat is None else x_tok / (1 + x_tok / sat)
+        close(meta["step"][0], s_eff / (c_h + s_eff), 1e-10)
+        limit = 1.0 if sat is None else sat / (c_h + sat)
+        assert (meta["step"][0] <= limit + 1e-12).all()
+        close(meta["step"][0, -1], limit, 0.01)
+        # the step moves toward the same estimate: dV / step does not depend on the saturation
+        if sat is None:
+            direction = meta["dV"] / meta["step"][..., None, None]
+        else:
+            close(meta["dV"] / meta["step"][..., None, None], direction, 1e-8)
 
 
 def test_flat_prior_limit_is_rfa():
@@ -252,7 +297,7 @@ def test_zero_decay_continuity():
 # ---------------------------------------------------------------------------------------------------
 
 def test_gradcheck():
-    for kw in (dict(), dict(inflation=0.3, prior="direct")):
+    for kw in (dict(), dict(inflation=0.3, prior="direct"), dict(saturation=1.0)):
         layer = make_layer(**kw)
         x, t = inputs(B=1, N=5)
         x.requires_grad_(True)

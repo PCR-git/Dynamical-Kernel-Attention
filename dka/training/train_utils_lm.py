@@ -11,8 +11,9 @@ from tqdm import tqdm
 # return are skipped (tau is RFA only; prior_weight c_h, zeta and the mean step are DKA only)
 _RFA_LOG_KEYS = {"mu_v": "mu", "sigma_sq_v": "sigma", "sigma_tilde_sq_v": "sigma_tilde",
                  "eta_sq_v": "eta", "gamma_sq_v": "gamma", "tau": "tau", "nu_over_d": "nu_over_d",
-                 "prior_weight": "prior_weight", "zeta": "zeta", "step_mean": "step"}
-_PER_BLOCK_KEYS = ("prior_weight", "zeta", "step_mean")   # logged for every block, [n_blocks, H]; the rest last block, [H]
+                 "prior_weight": "prior_weight", "zeta": "zeta", "saturation": "saturation",
+                 "step_mean": "step"}
+_PER_BLOCK_KEYS = ("prior_weight", "zeta", "saturation", "step_mean")   # logged for every block, [n_blocks, H]; the rest last block, [H]
 
 
 def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=None, log_every=100):
