@@ -70,8 +70,8 @@ PRESETS = {
     "B4":   dict(use_rope=False, use_alibi=False, use_relative_decay_vanilla=True,  # SC-RoPE + decay
                  use_SC_RoPE=True, damping=0.05),
     "B5":   dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True,          # SC-RoPE + coupled linear bias
-                 use_SC_RoPE=True, damping=5.0),
-    "B6":   dict(use_rope=False, use_alibi=False, use_kerple_log=True),             # KERPLE-log                                   # slopes 2 mu_h, as D3 / M3
+                 use_SC_RoPE=True, damping=5.0),                                   # slopes 2 mu_h, as D3 / M3
+    "B6":   dict(use_rope=False, use_alibi=False, use_kerple_log=True),             # KERPLE-log
     # --- RFA models ---
     "M1":   dict(use_log_linear_decay=False, damping=0.05),                         # Isotropic RFA
     "M2":   dict(_SC, damping=0.05),                                                # SC-RFA (in-window)

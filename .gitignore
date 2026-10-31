@@ -37,3 +37,15 @@ paper_revisions.md
 
 # Private notes (papers, preprints): kept local, never pushed
 notes/
+
+# Editors, environments, OS files, build metadata
+.vscode/
+.idea/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.DS_Store
+Thumbs.db
+*.pdf
