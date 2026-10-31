@@ -101,6 +101,16 @@ def test_b8_nope():
         assert torch.allclose(layer(x)[0][0, -1], layer(x[:, perm])[0][0, -1], atol=1e-6)
 
 
+def test_b10_b5_plus_null():
+    """B10 = B5 (SC-RoPE + coupled linear bias, slopes 2 mu_h) with softmax plus one: rows sum to at most one."""
+    layer = _baseline("B10")
+    c = layer.config
+    assert c.rope == "sc_rope" and c.bias_damping == 5.0 and c.softmax_plus_one and c.decay_damping is None
+    with torch.no_grad():
+        a = layer(torch.randn(2, 10, 32))[1]["attn_mat"]
+    assert torch.isfinite(a).all() and (a.sum(-1) <= 1 + 1e-6).all()
+
+
 def test_b9_softmax_plus_one():
     """RoPE + softmax plus one: the weights are a softmax over the keys and one extra zero logit, so each row sums
     to at most one, and they stay finite for very large or very negative scores."""

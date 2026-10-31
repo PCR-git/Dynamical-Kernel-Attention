@@ -162,7 +162,7 @@ one run takes 6-8 hours on one GPU. `run_queue.ps1` runs several trainings in se
 | D2.S, D3.S | DKA with evidence saturation (experimental) |
 | M1, M2, M3 | RFA (as in the RFA paper); M1.I-M3.I with the innovation output, as DKA |
 | M2.1-M2.8 | RFA ablations from the RFA paper |
-| B1-B9 | baselines: RoPE, ALiBi, RoPE + decay, SC-RoPE + decay, SC-RoPE + linear bias with slopes $2\mu_h$, KERPLE-log, xPos, NoPE, RoPE + softmax plus one |
+| B1-B10 | baselines: RoPE, ALiBi, RoPE + decay, SC-RoPE + decay, SC-RoPE + linear bias with slopes $2\mu_h$ (DKA without the noise model and null slot), KERPLE-log, xPos, NoPE, RoPE + softmax plus one, B5 + softmax plus one (DKA without the noise model) |
 
 Speed and memory: `--compile` applies `torch.compile` to the backbone. `LanguageModel.loss()` computes the loss in
 chunks, so the full logits are never stored, and `--grad-checkpointing` recomputes each block in the backward pass.
@@ -198,7 +198,7 @@ dka/
 ├── reference.py          # literal implementation of the DKA model (ground truth for tests)
 ├── init.py               # frequency, decay and complex-projection initialization
 ├── legacy.py             # loading checkpoints from earlier versions of the RFA code
-├── model/                # Backbone, LanguageModel; baselines/ holds the baseline attention (presets B1-B9)
+├── model/                # Backbone, LanguageModel; baselines/ holds the baseline attention (presets B1-B10)
 ├── training/             # training loops, datasets, presets
 └── utils/
 train_lm.py, eval_extrapolation.py, eval_eviction.py, download_data.py, dynamics_compare.py

@@ -76,6 +76,8 @@ PRESETS = {
     "B7":   dict(use_rope=False, use_alibi=False, use_xpos=True),                   # xPos
     "B8":   dict(use_rope=False, use_alibi=False),                                  # NoPE
     "B9":   dict(use_rope=True, use_alibi=False, use_softmax_one=True),             # RoPE + softmax plus one
+    "B10":  dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True,          # B5 + softmax plus one: DKA
+                 use_SC_RoPE=True, damping=5.0, use_softmax_one=True),             # without the noise model
     # --- RFA models ---
     "M1":   dict(use_log_linear_decay=False, damping=0.05),                         # Isotropic RFA
     "M2":   dict(_SC, damping=0.05),                                                # SC-RFA (in-window)

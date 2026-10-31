@@ -27,7 +27,7 @@ def _norm_name(Norm):
 
 def attention_config_from_args(args, d_model, n_heads, width):
     """Baseline selection from the notebook flags (B1 = use_rope, B2 = use_alibi, B3/B4 = use_relative_decay_vanilla,
-    B5 = use_sc_linear_bias, B6 = use_kerple_log, B7 = use_xpos, B8 = no flags (NoPE), B9 = use_softmax_one)."""
+    B5 = use_sc_linear_bias, B6 = use_kerple_log, B7 = use_xpos, B8 = no flags (NoPE), B9 = use_softmax_one, B10 = use_sc_linear_bias + use_softmax_one)."""
     bias_damping = None
     if getattr(args, "use_sc_linear_bias", False):
         rope = "sc_rope"

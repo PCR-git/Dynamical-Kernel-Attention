@@ -10,7 +10,7 @@ from .pos_encoding import RoPE, SCRoPE, XPos, get_alibi_slopes
 
 
 class MultiHeadAttentionLayer(nn.Module):
-    """Baseline multi-head dot-product attention (presets B1-B9); see AttentionConfig for the options."""
+    """Baseline multi-head dot-product attention (presets B1-B10); see AttentionConfig for the options."""
 
     def __init__(self, config: AttentionConfig):
         super().__init__()
