@@ -2,7 +2,7 @@ import torch.nn as nn
 
 from dka import RFAConfig, DKAConfig, MultiheadIsotropicRFA, MultiheadIsotropicDKA
 from .config import AttentionConfig, BackboneConfig
-from .layers import MultiHeadAttentionLayer
+from .baselines import MultiHeadAttentionLayer
 
 NORMS = {"layer": nn.LayerNorm, "rms": nn.RMSNorm}
 

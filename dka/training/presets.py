@@ -54,7 +54,7 @@ BASE_ARGS = dict(
 
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
-    use_kerple_log=False,
+    use_kerple_log=False, use_xpos=False, use_softmax_one=False,
 )
 
 _SC = dict(use_SC_RoPE=True, scale_decay_by_time_interval=False, use_log_linear_decay=False)
@@ -72,6 +72,9 @@ PRESETS = {
     "B5":   dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True,          # SC-RoPE + coupled linear bias
                  use_SC_RoPE=True, damping=5.0),                                   # slopes 2 mu_h, as D3 / M3
     "B6":   dict(use_rope=False, use_alibi=False, use_kerple_log=True),             # KERPLE-log
+    "B7":   dict(use_rope=False, use_alibi=False, use_xpos=True),                   # xPos
+    "B8":   dict(use_rope=False, use_alibi=False),                                  # NoPE
+    "B9":   dict(use_rope=True, use_alibi=False, use_softmax_one=True),             # RoPE + softmax plus one
     # --- RFA models ---
     "M1":   dict(use_log_linear_decay=False, damping=0.05),                         # Isotropic RFA
     "M2":   dict(_SC, damping=0.05),                                                # SC-RFA (in-window)

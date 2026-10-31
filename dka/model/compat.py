@@ -12,7 +12,7 @@ import torch.nn as nn
 from dka import RFAConfig, DKAConfig
 from .blocks import Block, build_attention
 from .config import AttentionConfig, BackboneConfig
-from .layers import MultiHeadAttentionLayer
+from .baselines import MultiHeadAttentionLayer
 from .model_utils import resolve_multihead_dims
 from .networks import Backbone
 
@@ -27,7 +27,7 @@ def _norm_name(Norm):
 
 def attention_config_from_args(args, d_model, n_heads, width):
     """Baseline selection from the notebook flags (B1 = use_rope, B2 = use_alibi, B3/B4 = use_relative_decay_vanilla,
-    B5 = use_sc_linear_bias, B6 = use_kerple_log)."""
+    B5 = use_sc_linear_bias, B6 = use_kerple_log, B7 = use_xpos, B8 = no flags (NoPE), B9 = use_softmax_one)."""
     bias_damping = None
     if getattr(args, "use_sc_linear_bias", False):
         rope = "sc_rope"
@@ -37,11 +37,12 @@ def attention_config_from_args(args, d_model, n_heads, width):
         rope = "sc_rope" if args.use_SC_RoPE else "rope"
         damping = args.damping
     else:
-        rope = "rope" if args.use_rope else None
+        rope = "xpos" if getattr(args, "use_xpos", False) else ("rope" if args.use_rope else None)
         damping = None
     return AttentionConfig(d_model=d_model, n_heads=n_heads, width=width, rope=rope, alibi=args.use_alibi,
                            decay_damping=damping, bias_damping=bias_damping,
-                           kerple_log=getattr(args, "use_kerple_log", False))
+                           kerple_log=getattr(args, "use_kerple_log", False),
+                           softmax_plus_one=getattr(args, "use_softmax_one", False))
 
 
 def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim=None,

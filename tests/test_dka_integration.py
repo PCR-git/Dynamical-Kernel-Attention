@@ -20,7 +20,7 @@ sys.path.insert(0, REPO)
 
 from dka import MultiheadIsotropicDKA, MultiheadIsotropicRFA, DKAConfig
 from dka.init import init_spectrally_coupled_rope
-from dka.model.layers import MultiHeadAttentionLayer
+from dka.model.baselines import MultiHeadAttentionLayer, RoPE, XPos
 from dka.model import (Backbone, BackboneConfig, LanguageModel, RFATransformerNetwork, print_layer_diagnostics,
                        get_model_sde_snapshots)
 from dka.training import single_epoch_lm
@@ -60,6 +60,67 @@ def test_presets_build_dka():
         out, infos = net(torch.randn(2, 10, 32))
         assert out.shape == (2, 10, 32) and torch.isfinite(out).all(), preset
         assert infos[0]["prior_weight"].shape == (4,) and infos[0]["step_mean"].shape == (4,), preset
+
+
+def _baseline(preset):
+    net = build_backbone(small(preset)).eval()
+    return [m for m in net.modules() if isinstance(m, MultiHeadAttentionLayer)][0]
+
+
+def test_b7_xpos():
+    """xPos: each frequency pair's contribution to q_n . k_m is RoPE's times zeta_k^((n - m) / 512), with
+    zeta_k = (2k + 0.4 D) / (1.4 D), whatever the sequence length (the centering cancels)."""
+    layer = _baseline("B7")
+    assert layer.config.rope == "xpos" and isinstance(layer.rope, XPos)
+    D = 8
+    xpos, rope = XPos(D), RoPE(D)
+    zeta = (torch.arange(0, D, 2).double() + 0.4 * D) / (1.4 * D)
+    for L in (7, 12):
+        q, k = torch.randn(1, L, 2, D), torch.randn(1, L, 2, D)
+        xq, xk = xpos(q).view(1, L, 2, D // 2, 2), xpos(k, key=True).view(1, L, 2, D // 2, 2)
+        rq, rk = rope(q).view(1, L, 2, D // 2, 2), rope(k).view(1, L, 2, D // 2, 2)
+        x_pair = torch.einsum("bnhkc,bmhkc->bnmhk", xq, xk)
+        r_pair = torch.einsum("bnhkc,bmhkc->bnmhk", rq, rk)
+        lag = (torch.arange(L)[:, None] - torch.arange(L)[None, :]).double()
+        decay = zeta[None, None, :] ** (lag[:, :, None] / 512)                        # [L, L, D/2]
+        assert torch.allclose(x_pair.double(), r_pair.double() * decay[None, :, :, None, :], atol=1e-5)
+    out, info = build_backbone(small("B7"))(torch.randn(2, 10, 32))
+    assert torch.isfinite(out).all()
+
+
+def test_b8_nope():
+    """NoPE: no positional encoding and no bias; permuting the earlier tokens leaves the last output unchanged."""
+    layer = _baseline("B8")
+    c = layer.config
+    assert c.rope is None and layer.rope is None and not (c.alibi or c.kerple_log or c.softmax_plus_one)
+    assert c.bias_damping is None and c.decay_damping is None
+    x = torch.randn(1, 9, 32)
+    perm = torch.cat([torch.randperm(8), torch.tensor([8])])
+    with torch.no_grad():
+        assert torch.allclose(layer(x)[0][0, -1], layer(x[:, perm])[0][0, -1], atol=1e-6)
+
+
+def test_b9_softmax_plus_one():
+    """RoPE + softmax plus one: the weights are a softmax over the keys and one extra zero logit, so each row sums
+    to at most one, and they stay finite for very large or very negative scores."""
+    layer = _baseline("B9")
+    assert layer.config.softmax_plus_one and layer.config.rope == "rope"
+    B, L, H, D = 2, 10, layer.num_heads, layer.head_dim
+    causal = torch.ones(L, L, dtype=torch.bool).tril()
+    for scale in (1.0, 30.0, -30.0):
+        x = torch.randn(B, L, 32)
+        with torch.no_grad():
+            if scale != 1.0:
+                layer.query_projection.weight.mul_(scale)
+            a = layer(x)[1]["attn_mat"]
+            Q = layer.rope(layer.query_projection(x).view(B, L, H, D)).transpose(1, 2)
+            K = layer.rope(layer.key_projection(x).view(B, L, H, D)).transpose(1, 2)
+            s = (Q @ K.transpose(-2, -1) / D ** 0.5).masked_fill(~causal, float("-inf"))
+            ref = torch.cat([s, torch.zeros(B, H, L, 1)], -1).softmax(-1)[..., :-1]
+            if scale != 1.0:
+                layer.query_projection.weight.div_(scale)
+        assert torch.isfinite(a).all() and (a.sum(-1) <= 1 + 1e-6).all()
+        assert torch.allclose(a, ref, atol=1e-6), scale
 
 
 def test_b6_kerple_log():

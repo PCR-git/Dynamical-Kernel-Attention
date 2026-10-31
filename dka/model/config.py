@@ -12,7 +12,7 @@ class AttentionConfig:
     """
     Baseline multi-head dot-product attention with optional positional mechanisms:
 
-        rope:          None | "rope" | "sc_rope"   rotary embedding of queries and keys
+        rope:          None (NoPE) | "rope" | "sc_rope" | "xpos"   rotary embedding of queries and keys
         alibi:         linear distance bias on the logits
         decay_damping: exponential decay of the attention weights, mu_h = damping * omega_h,max
                        (applied after the softmax, as in RFA); None = no decay
@@ -21,25 +21,27 @@ class AttentionConfig:
 
         kerple_log:    KERPLE's logarithmic bias -p_h log(1 + a_h |i - j|) on the logits, p_h and a_h learned per head
                        (initialized uniform on [0, 2] and [0, 1], clamped at 0.01, as in the KERPLE code)
+        softmax_plus_one: an extra null logit 0 in the softmax (Miller, 2023), so a head can attend to nothing
 
     The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
-    B5 = sc_rope + coupled linear bias, B6 = kerple_log.
+    B5 = sc_rope + coupled linear bias, B6 = kerple_log, B7 = xpos, B8 = NoPE, B9 = rope + softmax plus one.
     """
 
     d_model: int
     n_heads: int
     width: int                       # total query/key/value width across heads
-    rope: Optional[Literal["rope", "sc_rope"]] = "rope"
+    rope: Optional[Literal["rope", "sc_rope", "xpos"]] = "rope"
     alibi: bool = False
     decay_damping: Optional[float] = None
     bias_damping: Optional[float] = None
     kerple_log: bool = False
+    softmax_plus_one: bool = False
 
     def __post_init__(self):
         if self.width % self.n_heads != 0:
             raise ValueError(f"width={self.width} is not divisible by n_heads={self.n_heads}")
-        if self.rope not in (None, "rope", "sc_rope"):
-            raise ValueError(f"rope must be None, 'rope' or 'sc_rope', got {self.rope!r}")
+        if self.rope not in (None, "rope", "sc_rope", "xpos"):
+            raise ValueError(f"rope must be None, 'rope', 'sc_rope' or 'xpos', got {self.rope!r}")
 
 
 @dataclass(frozen=True)
