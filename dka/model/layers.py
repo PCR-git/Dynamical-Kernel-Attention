@@ -42,6 +42,10 @@ class MultiHeadAttentionLayer(nn.Module):
             _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.bias_damping)
             self.register_buffer("bias_slopes", (2 * mu).view(1, -1, 1, 1))  # log h = -2 mu dt
 
+        if c.kerple_log:
+            self.kerple_p = nn.Parameter(2 * torch.rand(c.n_heads))
+            self.kerple_a = nn.Parameter(torch.rand(c.n_heads))
+
     def forward(self, x, t_measure=None, causal=True, return_metadata=False):
         """
         Self-attention over regular positions. x: [B, L, d_model].
@@ -69,6 +73,10 @@ class MultiHeadAttentionLayer(nn.Module):
             scores = scores - self.alibi_slopes * dist
         if c.bias_damping is not None:
             scores = scores - self.bias_slopes * dist
+        if c.kerple_log:
+            p = self.kerple_p.clamp(min=0.01).view(1, -1, 1, 1)
+            a = self.kerple_a.clamp(min=0.01).view(1, -1, 1, 1)
+            scores = scores - p * torch.log1p(a * dist)
         if causal:
             scores = scores.masked_fill(~torch.ones(L, L, dtype=torch.bool, device=x.device).tril(), float("-inf"))
 

@@ -62,6 +62,31 @@ def test_presets_build_dka():
         assert infos[0]["prior_weight"].shape == (4,) and infos[0]["step_mean"].shape == (4,), preset
 
 
+def test_b6_kerple_log():
+    """B6 = KERPLE-log, no rotation: the weights are those of the same layer without the bias, times
+    (1 + a_h dt)^-p_h, renormalized; p_h and a_h are learned and clamped at 0.01."""
+    torch.manual_seed(0)
+    net = build_backbone(small("B6")).eval()
+    layer = [m for m in net.modules() if isinstance(m, MultiHeadAttentionLayer)][0]
+    c = layer.config
+    assert c.kerple_log and c.rope is None and not c.alibi and c.bias_damping is None and c.decay_damping is None
+    assert layer.kerple_p.requires_grad and (0 <= layer.kerple_p).all() and (layer.kerple_p <= 2).all()
+    assert (0 <= layer.kerple_a).all() and (layer.kerple_a <= 1).all()
+    with torch.no_grad():
+        layer.kerple_a[0] = -1.0                       # below the clamp: acts as 0.01
+    plain = copy.deepcopy(layer)
+    plain.config = dataclasses.replace(c, kerple_log=False)
+    x = torch.randn(2, 12, 32)
+    with torch.no_grad():
+        a = layer(x)[1]["attn_mat"]
+        a0 = plain(x)[1]["attn_mat"]
+    dist = (torch.arange(12)[:, None] - torch.arange(12)[None, :]).abs()
+    p = layer.kerple_p.detach().clamp(min=0.01).view(1, -1, 1, 1)
+    q = layer.kerple_a.detach().clamp(min=0.01).view(1, -1, 1, 1)
+    w = a0 * (1 + q * dist) ** (-p)
+    assert torch.allclose(a, w / w.sum(-1, keepdim=True), atol=1e-6)
+
+
 def test_b5_coupled_linear_bias():
     """B5 = SC-RoPE with the bias -2 mu_h |i - j| before the softmax, mu_h = b omega_h,max (DKA's log h at zeta = 0):
     its weights are those of the same layer without the bias, times exp(-2 mu_h dt), renormalized."""

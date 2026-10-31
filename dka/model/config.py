@@ -19,8 +19,11 @@ class AttentionConfig:
         bias_damping:  linear distance bias -2 mu_h |i - j| on the logits (before the softmax), mu_h = damping *
                        omega_h,max: DKA's log h with zeta = 0, i.e. ALiBi with frequency-coupled slopes; None = none
 
+        kerple_log:    KERPLE's logarithmic bias -p_h log(1 + a_h |i - j|) on the logits, p_h and a_h learned per head
+                       (initialized uniform on [0, 2] and [0, 1], clamped at 0.01, as in the KERPLE code)
+
     The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
-    B5 = sc_rope + coupled linear bias.
+    B5 = sc_rope + coupled linear bias, B6 = kerple_log.
     """
 
     d_model: int
@@ -30,6 +33,7 @@ class AttentionConfig:
     alibi: bool = False
     decay_damping: Optional[float] = None
     bias_damping: Optional[float] = None
+    kerple_log: bool = False
 
     def __post_init__(self):
         if self.width % self.n_heads != 0:
