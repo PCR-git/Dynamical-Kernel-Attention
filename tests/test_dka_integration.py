@@ -7,6 +7,7 @@ innovation presets.
 """
 
 import copy
+import math
 import dataclasses
 import os
 import sys
@@ -121,6 +122,30 @@ def test_b9_softmax_plus_one():
                 layer.query_projection.weight.div_(scale)
         assert torch.isfinite(a).all() and (a.sum(-1) <= 1 + 1e-6).all()
         assert torch.allclose(a, ref, atol=1e-6), scale
+
+
+def test_yarn():
+    """YaRN on a RoPE model: unchanged up to the training length; beyond it (s = L / L0) the shortest wavelengths keep
+    their frequency, the longest are divided by s, and the logits are scaled by (0.1 ln s + 1)^2."""
+    D, L0 = 64, 512
+    rope, yarn = RoPE(D), RoPE(D, yarn_original_length=L0)
+    assert torch.equal(yarn.frequencies(L0), rope.theta) and yarn.yarn_logit_scale(L0) == 1.0
+    f = yarn.frequencies(4 * L0)
+    wavelength = 2 * math.pi / rope.theta
+    fast, slow = wavelength < L0 / 32, wavelength > L0
+    assert torch.allclose(f[fast], rope.theta[fast]) and torch.allclose(f[slow], rope.theta[slow] / 4)
+    assert ((f <= rope.theta + 1e-12) & (f >= rope.theta / 4 - 1e-12)).all()
+    assert abs(yarn.yarn_logit_scale(4 * L0) - (0.1 * math.log(4) + 1) ** 2) < 1e-12
+    # in a model: identical outputs up to L0, different beyond
+    torch.manual_seed(0)
+    base = build_backbone(small("B1")).eval()
+    with_yarn = build_backbone(small("B1", yarn_original_length=16)).eval()
+    with_yarn.load_state_dict(base.state_dict())
+    with torch.no_grad():
+        x = torch.randn(1, 16, 32)
+        assert torch.equal(base(x)[0], with_yarn(x)[0])
+        x = torch.randn(1, 40, 32)
+        assert not torch.allclose(base(x)[0], with_yarn(x)[0])
 
 
 def test_b6_kerple_log():

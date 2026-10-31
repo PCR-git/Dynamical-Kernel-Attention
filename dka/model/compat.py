@@ -42,7 +42,8 @@ def attention_config_from_args(args, d_model, n_heads, width):
     return AttentionConfig(d_model=d_model, n_heads=n_heads, width=width, rope=rope, alibi=args.use_alibi,
                            decay_damping=damping, bias_damping=bias_damping,
                            kerple_log=getattr(args, "use_kerple_log", False),
-                           softmax_plus_one=getattr(args, "use_softmax_one", False))
+                           softmax_plus_one=getattr(args, "use_softmax_one", False),
+                           yarn_original_length=getattr(args, "yarn_original_length", None))
 
 
 def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim=None,

@@ -46,9 +46,9 @@ def make_layer(seed=0, mu=(0.08, 0.3, 0.7), **kw):
         layer.sigma_raw.copy_(rnd(-1.5, 1.0))
         layer.eta_raw.copy_(rnd(-1.0, 1.0))
         layer.nu_raw.copy_(rnd(-1.0, 1.5))
-        if layer.config.prior != "direct":
+        if layer.config.prior in ("tokens", "window"):
             layer.log_c.copy_(rnd(-3.0, 1.0))
-        else:
+        elif layer.config.prior == "direct":
             layer.gamma_raw.copy_(rnd(-0.5, 1.5))
         if layer.theta is not None:
             layer.theta.copy_(rnd(-2.0, 2.0))
@@ -196,6 +196,37 @@ def test_flat_prior_limit_is_rfa():
             out_rfa, _ = rfa(x, t_measure=t)
             shift = F.linear(V, dka.W_o.weight) if output == "estimate" else 0.0
             close(out_dka + shift, out_rfa, 1e-9)
+
+
+def test_no_null_slot():
+    """prior="none" removes the null slot: every step is 1, the update is a full step to the context's estimate, and
+    with full inflation (zeta -> 1) as well the layer is exactly RFA with the innovation output (tau = 1, no floor)."""
+    layer = make_layer(prior="none", inflation=0.3)
+    x, t = inputs(N=8)
+    out, meta = layer(x, t_measure=t, return_metadata=True)
+    assert torch.isfinite(out).all()
+    close(meta["step"], 1.0, 1e-12)
+    out.square().mean().backward()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in layer.parameters())
+
+    for robust in (True, False):
+        dka = make_layer(prior="none", process_noise="steady_state", inflation=0.5, robust_weight=robust,
+                         mu=(0.05, 0.2, 0.4), epsilon=1e-12)
+        with torch.no_grad():
+            dka.theta.fill_(80.0)
+        out_dka, _ = dka(x, t_measure=t)
+        rfa = MultiheadIsotropicRFA(RFAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, process_noise="steady_state",
+                                              robust_weight=robust, epsilon=1e-12, cov_epsilon=0.0,
+                                              output="innovation")).double()
+        with torch.no_grad():
+            for name in ("W_q", "W_k", "W_v", "W_o"):
+                getattr(rfa, name).load_state_dict(getattr(dka, name).state_dict())
+            for name in ("omega", "mu", "sigma_raw", "eta_raw", "nu_raw"):
+                getattr(rfa, name).copy_(getattr(dka, name))
+            rfa.gamma_raw.fill_(-80.0)
+            rfa.tau_raw.fill_(math.log(math.expm1(1.0)))
+        out_rfa, _ = rfa(x, t_measure=t)
+        close(out_dka, out_rfa, 1e-9)
 
 
 def test_zero_decay_is_softmax_plus_one():

@@ -149,7 +149,9 @@ class DKAConfig:
     # "window": gamma^-2 = c_h S_bar_h, S_bar_h the information of a whole context of agreeing tokens (Appendix G);
     #           slow heads then need many agreeing tokens to update (kept for comparison)
     # "direct": learn gamma^2
-    prior: Literal["tokens", "window", "direct"] = "tokens"
+    # "none":   no null slot (gamma^-2 = 0): every step is a full step to the context's estimate. Ablation that keeps the
+    #           stationary measurement model (h = E^2); with inflation zeta -> 1 as well it is RFA (innovation output)
+    prior: Literal["tokens", "window", "direct", "none"] = "tokens"
     init_prior_weight: float = 1.0   # initial c_h ("tokens", "window"); c_h = 1 with "tokens" is softmax-plus-one-like
     calibration_length: int = 512    # prior="window": context length over which S_bar is summed (the training length)
     init_prior_var: float = 1.0      # initial gamma^2 for prior="direct"

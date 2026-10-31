@@ -22,6 +22,7 @@ class AttentionConfig:
         kerple_log:    KERPLE's logarithmic bias -p_h log(1 + a_h |i - j|) on the logits, p_h and a_h learned per head
                        (initialized uniform on [0, 2] and [0, 1], clamped at 0.01, as in the KERPLE code)
         softmax_plus_one: an extra null logit 0 in the softmax (Miller, 2023), so a head can attend to nothing
+        yarn_original_length: training length; if set, RoPE / SC-RoPE apply YaRN zero-shot beyond it (inference)
 
     The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
     B5 = sc_rope + coupled linear bias, B6 = kerple_log, B7 = xpos, B8 = NoPE, B9 = rope + softmax plus one.
@@ -36,6 +37,7 @@ class AttentionConfig:
     bias_damping: Optional[float] = None
     kerple_log: bool = False
     softmax_plus_one: bool = False
+    yarn_original_length: Optional[int] = None
 
     def __post_init__(self):
         if self.width % self.n_heads != 0:

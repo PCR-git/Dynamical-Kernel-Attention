@@ -33,7 +33,7 @@ class MultiheadIsotropicDKA(nn.Module):
         eta_raw    measurement noise, eta^2 = softplus(eta_raw) + eps
         nu_raw     Student-t degrees of freedom, nu = d * softplus(nu_raw) + 2 + eps
         log_c      prior="tokens": gamma^-2 = exp(log_c) / eta^2; prior="window": gamma^-2 = exp(log_c) * S_bar
-        gamma_raw  prior="direct": gamma^2 = softplus(gamma_raw) + eps
+        gamma_raw  prior="direct": gamma^2 = softplus(gamma_raw) + eps (prior="none": no null slot, gamma^-2 = 0)
         theta      inflation zeta = sigmoid(theta) (only if config.inflation is not None)
         log_n_sat  evidence saturation, S_max = n_sat / eta^2 (only if config.saturation is not None)
     """
@@ -73,9 +73,9 @@ class MultiheadIsotropicDKA(nn.Module):
         self.nu_raw = nn.Parameter(torch.full((H,), c.init_nu_over_d))
 
         # --- Proximal prior ---
-        if c.prior != "direct":
+        if c.prior in ("tokens", "window"):
             self.log_c = nn.Parameter(torch.full((H,), math.log(c.init_prior_weight)))
-        else:
+        elif c.prior == "direct":
             self.gamma_raw = nn.Parameter(inv_softplus(torch.full((H,), c.init_prior_var)))
 
         # --- Variance inflation ---
@@ -124,6 +124,8 @@ class MultiheadIsotropicDKA(nn.Module):
         elif c.prior == "window":
             S_bar = calibrated_evidence(mu, sigma_sq, eta_sq, c.calibration_length, self.theta)
             log_prior_precision = self.log_c + torch.log(S_bar)
+        elif c.prior == "none":
+            log_prior_precision = torch.full_like(eta_sq, float("-inf"))   # null slot weight exp(-inf) = 0
         else:
             log_prior_precision = -torch.log(F.softplus(self.gamma_raw) + c.epsilon)
         log_saturation = None if self.log_n_sat is None else self.log_n_sat - torch.log(eta_sq)
@@ -216,7 +218,7 @@ class MultiheadIsotropicDKA(nn.Module):
             "mu_v": mu, "sigma_sq_v": p["sigma_sq"], "sigma_tilde_sq_v": v_inf, "eta_sq_v": p["eta_sq"],
             "gamma_sq_v": torch.exp(-p["log_prior_precision"]), "nu_over_d": p["nu"] / self.config.head_dim,
         }
-        if self.config.prior != "direct":
+        if self.config.prior in ("tokens", "window"):
             summary["prior_weight"] = torch.exp(self.log_c)
         if p["theta"] is not None:
             summary["zeta"] = torch.sigmoid(p["theta"])

@@ -11,6 +11,7 @@ directory). Results go to <run dir>/extrapolation.txt and are printed as a table
 """
 
 import argparse
+import ast
 import glob
 import math
 import os
@@ -62,7 +63,17 @@ def main():
     p.add_argument("--data-dir", default="datasets")
     p.add_argument("--num-proc", type=int, default=4)
     p.add_argument("--gpu", type=int, default=0)
+    p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                   help="override fields of the checkpoint's args, e.g. yarn_original_length=512 (YaRN for RoPE)")
+    p.add_argument("--label", default=None, help="suffix for the model name and extrapolation_<label>.txt")
     cli = p.parse_args()
+    overrides = {}
+    for pair in cli.set:
+        key, _, value = pair.partition("=")
+        try:
+            overrides[key] = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            overrides[key] = value
 
     device = torch.device(f"cuda:{cli.gpu}" if torch.cuda.is_available() else "cpu")
     tokenizer = load_tokenizer()
@@ -75,10 +86,12 @@ def main():
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         args = ckpt["args"]
         args.device = device
+        for key, value in overrides.items():
+            setattr(args, key, value)
         model = build_language_model(args).to(device)
         model.load_state_dict(ckpt["model_state_dict"])
         model.eval()
-        name = os.path.basename(os.path.normpath(run_dir)).split("__")[0]
+        name = os.path.basename(os.path.normpath(run_dir)).split("__")[0] + (f"+{cli.label}" if cli.label else "")
         table[name] = {}
         lines = [f"# {ckpt_path} (preset {args.preset})", f"{'length':>6} {'test_ppl':>9} {'time_s':>7}"]
         for L in cli.lengths:
@@ -87,7 +100,8 @@ def main():
             table[name][L] = ppl
             lines.append(f"{L:>6} {ppl:>9.2f} {time.time() - t0:>7.0f}")
             print(f"{name:<16} L={L:<5} ppl {ppl:7.2f}  ({time.time() - t0:.0f}s)", flush=True)
-        with open(os.path.join(run_dir, "extrapolation.txt"), "w") as f:
+        out_name = f"extrapolation_{cli.label}.txt" if cli.label else "extrapolation.txt"
+        with open(os.path.join(run_dir, out_name), "w") as f:
             f.write("\n".join(lines) + "\n")
         del model
         torch.cuda.empty_cache()

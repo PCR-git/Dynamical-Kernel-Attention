@@ -18,18 +18,43 @@ class RoPE(nn.Module):
     """
     Rotary positional embedding. Feature pairs (2k, 2k+1) of each head are rotated by
     angle theta_k * position. Input/output shape: [B, L, H, D_head].
+
+    yarn_original_length: if set, YaRN (Peng et al., 2023) is applied zero-shot and dynamically: for a sequence longer
+    than the training length, with s = L / yarn_original_length, frequency theta_k is interpolated to theta_k / s when its
+    wavelength is long compared with the training length and kept when it is short ("NTK-by-parts", alpha = 1,
+    beta = 32), and the logits are scaled by (0.1 ln s + 1)^2 (yarn_logit_scale). Shorter sequences are unchanged.
     """
 
-    def __init__(self, dim: int, base: float = 10000.0):
+    yarn_alpha, yarn_beta = 1.0, 32.0
+
+    def __init__(self, dim: int, base: float = 10000.0, yarn_original_length=None):
         super().__init__()
         if dim % 2 != 0:
             raise ValueError(f"RoPE dimension must be even, got {dim}")
         theta = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))  # [D/2]
         self.register_buffer("theta", theta)
+        self.yarn_original_length = yarn_original_length
+
+    def _yarn_scale(self, seq_len):
+        L0 = self.yarn_original_length
+        return 1.0 if L0 is None or seq_len <= L0 else seq_len / L0
+
+    def frequencies(self, seq_len):
+        """theta, YaRN-interpolated when the sequence is longer than the training length."""
+        s = self._yarn_scale(seq_len)
+        if s == 1.0:
+            return self.theta
+        r = self.yarn_original_length * self.theta / (2 * math.pi)          # training length / wavelength
+        ramp = ((r - self.yarn_alpha) / (self.yarn_beta - self.yarn_alpha)).clamp(0.0, 1.0)
+        return (1 - ramp) * self.theta / s + ramp * self.theta
+
+    def yarn_logit_scale(self, seq_len):
+        s = self._yarn_scale(seq_len)
+        return (0.1 * math.log(s) + 1.0) ** 2
 
     def angles(self, seq_len, device, dtype):
         pos = torch.arange(seq_len, device=device, dtype=dtype)
-        return pos[:, None, None] * self.theta.to(dtype)  # [L, 1, D/2] (broadcast over heads)
+        return pos[:, None, None] * self.frequencies(seq_len).to(dtype)  # [L, 1, D/2] (broadcast over heads)
 
     def forward(self, x):
         B, L, H, D = x.shape
@@ -45,16 +70,17 @@ class SCRoPE(RoPE):
     (head 0 = lowest frequencies), as in SC-RFA.
     """
 
-    def __init__(self, dim: int, n_heads: int, base: float = 10000.0):
+    def __init__(self, dim: int, n_heads: int, base: float = 10000.0, yarn_original_length=None):
         nn.Module.__init__(self)
         if dim % 2 != 0:
             raise ValueError(f"RoPE dimension must be even, got {dim}")
         theta, _ = init_spectrally_coupled_rope(n_heads, dim // 2, base=base)  # [H, D/2]
         self.register_buffer("theta", theta)
+        self.yarn_original_length = yarn_original_length
 
     def angles(self, seq_len, device, dtype):
         pos = torch.arange(seq_len, device=device, dtype=dtype)
-        return pos[:, None, None] * self.theta.to(dtype)  # [L, H, D/2]
+        return pos[:, None, None] * self.frequencies(seq_len).to(dtype)  # [L, H, D/2]
 
 ##########################################################################################
 ##########################################################################################

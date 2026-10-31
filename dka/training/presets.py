@@ -44,7 +44,7 @@ BASE_ARGS = dict(
     rfa_output="estimate",            # RFA: "estimate" (published runs) or "innovation" (paper Alg. 1, as DKA)
 
     # DKA (only used when attention_type="dka"; dynamics and noise use the RFA flags above)
-    dka_prior="tokens",               # null slot gamma^-2 = c_h / eta^2 ("tokens"), c_h S_bar ("window"), or "direct"
+    dka_prior="tokens",               # null slot gamma^-2 = c_h / eta^2 ("tokens"), c_h S_bar ("window"), "direct", or "none"
     dka_init_prior_weight=1.0,        # initial c_h: the prior is worth c_h agreeing tokens
     dka_init_prior_var=1.0,           # initial gamma^2 for dka_prior="direct"
     dka_inflation=None,               # None = stationary prior; zeta in [0, 1) = initial variance inflation (App. F)
@@ -55,6 +55,7 @@ BASE_ARGS = dict(
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
     use_kerple_log=False, use_xpos=False, use_softmax_one=False,
+    yarn_original_length=None,        # inference: e.g. --set yarn_original_length=512 applies YaRN to RoPE models
 )
 
 _SC = dict(use_SC_RoPE=True, scale_decay_by_time_interval=False, use_log_linear_decay=False)
@@ -113,6 +114,9 @@ PRESETS = {
     # Evidence saturation (R12), learned from n_sat = 1 (D2's evidence within 512 tokens is ~0.1-1 agreeing tokens)
     "D2.S": dict(_DKA, **_SC, damping=0.05, dka_saturation=1.0),
     "D3.S": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_saturation=1.0),
+    # No null slot (gamma^-2 = 0), stationary measurement model kept: isolates the null slot (vs D2 / D3)
+    "D2.N": dict(_DKA, **_SC, damping=0.05, dka_prior="none"),
+    "D3.N": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_prior="none"),
 }
 
 

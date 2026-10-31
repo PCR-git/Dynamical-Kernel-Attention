@@ -25,9 +25,9 @@ class MultiHeadAttentionLayer(nn.Module):
         self.output_projection = nn.Linear(c.width, c.d_model)
 
         if c.rope == "rope":
-            self.rope = RoPE(self.head_dim)
+            self.rope = RoPE(self.head_dim, yarn_original_length=c.yarn_original_length)
         elif c.rope == "sc_rope":
-            self.rope = SCRoPE(self.head_dim, n_heads=c.n_heads)
+            self.rope = SCRoPE(self.head_dim, n_heads=c.n_heads, yarn_original_length=c.yarn_original_length)
         elif c.rope == "xpos":
             self.rope = XPos(self.head_dim)
         else:
@@ -70,6 +70,8 @@ class MultiHeadAttentionLayer(nn.Module):
         # [B, H, L, D_head]
         Q, K, V = Q.transpose(1, 2), K.transpose(1, 2), V.transpose(1, 2)
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if c.yarn_original_length is not None and c.rope in ("rope", "sc_rope"):
+            scores = scores * self.rope.yarn_logit_scale(L)
 
         pos = torch.arange(L, device=x.device)
         dist = (pos[:, None] - pos[None, :]).abs()  # [L, L]
