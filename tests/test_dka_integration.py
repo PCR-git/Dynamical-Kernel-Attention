@@ -7,6 +7,7 @@ innovation presets.
 """
 
 import copy
+import dataclasses
 import os
 import sys
 import time
@@ -19,6 +20,7 @@ sys.path.insert(0, REPO)
 
 from dka import MultiheadIsotropicDKA, MultiheadIsotropicRFA, DKAConfig
 from dka.init import init_spectrally_coupled_rope
+from dka.model.layers import MultiHeadAttentionLayer
 from dka.model import (Backbone, BackboneConfig, LanguageModel, RFATransformerNetwork, print_layer_diagnostics,
                        get_model_sde_snapshots)
 from dka.training import single_epoch_lm
@@ -58,6 +60,27 @@ def test_presets_build_dka():
         out, infos = net(torch.randn(2, 10, 32))
         assert out.shape == (2, 10, 32) and torch.isfinite(out).all(), preset
         assert infos[0]["prior_weight"].shape == (4,) and infos[0]["step_mean"].shape == (4,), preset
+
+
+def test_b5_coupled_linear_bias():
+    """B5 = SC-RoPE with the bias -2 mu_h |i - j| before the softmax, mu_h = b omega_h,max (DKA's log h at zeta = 0):
+    its weights are those of the same layer without the bias, times exp(-2 mu_h dt), renormalized."""
+    args = small("B5")
+    net = build_backbone(args).eval()
+    layer = [m for m in net.modules() if isinstance(m, MultiHeadAttentionLayer)][0]
+    c = layer.config
+    assert c.rope == "sc_rope" and c.bias_damping == 5.0 and c.decay_damping is None and not c.alibi
+    _, mu = init_spectrally_coupled_rope(4, layer.head_dim // 2, b=5.0)
+    assert torch.allclose(layer.bias_slopes.flatten(), 2 * mu)
+    plain = copy.deepcopy(layer)
+    plain.config = dataclasses.replace(c, bias_damping=None)
+    x = torch.randn(2, 12, 32)
+    with torch.no_grad():
+        a = layer(x)[1]["attn_mat"]
+        a0 = plain(x)[1]["attn_mat"]
+    pos = torch.arange(12)
+    w = a0 * torch.exp(-layer.bias_slopes * (pos[:, None] - pos[None, :]).abs())
+    assert torch.allclose(a, w / w.sum(-1, keepdim=True), atol=1e-6)
 
 
 def test_typed_backbone_matches_notebook_classes():

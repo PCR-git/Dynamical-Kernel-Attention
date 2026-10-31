@@ -26,15 +26,21 @@ def _norm_name(Norm):
 
 
 def attention_config_from_args(args, d_model, n_heads, width):
-    """Baseline selection from the notebook flags (B1 = use_rope, B2 = use_alibi, B3/B4 = use_relative_decay_vanilla)."""
-    if getattr(args, "use_relative_decay_vanilla", False):
+    """Baseline selection from the notebook flags (B1 = use_rope, B2 = use_alibi, B3/B4 = use_relative_decay_vanilla,
+    B5 = use_sc_linear_bias)."""
+    bias_damping = None
+    if getattr(args, "use_sc_linear_bias", False):
+        rope = "sc_rope"
+        damping = None
+        bias_damping = args.damping
+    elif getattr(args, "use_relative_decay_vanilla", False):
         rope = "sc_rope" if args.use_SC_RoPE else "rope"
         damping = args.damping
     else:
         rope = "rope" if args.use_rope else None
         damping = None
     return AttentionConfig(d_model=d_model, n_heads=n_heads, width=width, rope=rope, alibi=args.use_alibi,
-                           decay_damping=damping)
+                           decay_damping=damping, bias_damping=bias_damping)
 
 
 def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim=None,

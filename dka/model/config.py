@@ -16,8 +16,11 @@ class AttentionConfig:
         alibi:         linear distance bias on the logits
         decay_damping: exponential decay of the attention weights, mu_h = damping * omega_h,max
                        (applied after the softmax, as in RFA); None = no decay
+        bias_damping:  linear distance bias -2 mu_h |i - j| on the logits (before the softmax), mu_h = damping *
+                       omega_h,max: DKA's log h with zeta = 0, i.e. ALiBi with frequency-coupled slopes; None = none
 
-    The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay.
+    The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
+    B5 = sc_rope + coupled linear bias.
     """
 
     d_model: int
@@ -26,6 +29,7 @@ class AttentionConfig:
     rope: Optional[Literal["rope", "sc_rope"]] = "rope"
     alibi: bool = False
     decay_damping: Optional[float] = None
+    bias_damping: Optional[float] = None
 
     def __post_init__(self):
         if self.width % self.n_heads != 0:
