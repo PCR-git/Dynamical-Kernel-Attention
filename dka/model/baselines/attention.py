@@ -9,6 +9,13 @@ from ..config import AttentionConfig
 from .pos_encoding import RoPE, SCRoPE, XPos, get_alibi_slopes
 
 
+def softmax_plus_one(scores):
+    """exp(s_j) / (1 + sum_k exp(s_k)) over the last dim: softmax with an extra null logit fixed at 0."""
+    m = scores.amax(dim=-1, keepdim=True).clamp(min=0.0)
+    e = torch.exp(scores - m)
+    return e / (e.sum(dim=-1, keepdim=True) + torch.exp(-m))
+
+
 class MultiHeadAttentionLayer(nn.Module):
     """Baseline multi-head dot-product attention (presets B1-B10); see AttentionConfig for the options."""
 
@@ -87,9 +94,7 @@ class MultiHeadAttentionLayer(nn.Module):
             scores = scores.masked_fill(~torch.ones(L, L, dtype=torch.bool, device=x.device).tril(), float("-inf"))
 
         if c.softmax_plus_one:                       # an extra null logit 0: weights sum to at most 1
-            m = scores.amax(dim=-1, keepdim=True).clamp(min=0.0)
-            e = torch.exp(scores - m)
-            attn_weights = e / (e.sum(dim=-1, keepdim=True) + torch.exp(-m))
+            attn_weights = softmax_plus_one(scores)
         else:
             attn_weights = F.softmax(scores, dim=-1)
         if c.decay_damping is not None:

@@ -198,6 +198,19 @@ class _F:                                # baseline scores [B, H, Nq, Nk] go thr
 
 
 bl.F = _F()
+_softmax_plus_one = bl.softmax_plus_one
+
+
+def softmax_plus_one(x):                 # baselines with a null logit (B9, B10) bypass F.softmax
+    if CUT["policy"] == "profile":
+        record_profile(x.log_softmax(dim=-1), 1)
+    elif CUT["policy"] is not None:
+        log_w = x.log_softmax(dim=-1) if CUT["policy"] == "h2o" else None
+        x = x.masked_fill(~keep_mask(x, 3, 1, log_w), float("-inf"))
+    return _softmax_plus_one(x)
+
+
+bl.softmax_plus_one = softmax_plus_one
 
 
 def latest(run_dir):
