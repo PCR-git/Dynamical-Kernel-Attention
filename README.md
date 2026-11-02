@@ -148,6 +148,8 @@ python train_lm.py --dataset wikitext103 --preset D3 --compile
 python train_lm.py --dataset wikitext103 --preset D2 --set damping=0.5     # override any args field
 python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/D3__<date>   # test perplexity at L = 512 ... 4096
 python eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
+python eval_positions.py positions.txt D3=runs/wikitext103/D3__<date>          # perplexity by position at 512, per-head diagnostics
+python eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>   # sliding window vs full context, paired
 ```
 
 Each run writes to `<out-dir>/<dataset>/<name>__<date>/` (`--out-dir` defaults to `$DKA_RUNS_DIR`, else `./runs`):
@@ -204,7 +206,7 @@ dka/
 ├── model/                # Backbone, LanguageModel; baselines/ holds the baseline attention (presets B1-B10)
 ├── training/             # training loops, datasets, presets
 └── utils/
-train_lm.py, eval_extrapolation.py, eval_eviction.py, download_data.py, dynamics_compare.py
+train_lm.py, eval_extrapolation.py, eval_eviction.py, eval_positions.py, eval_window.py, download_data.py, dynamics_compare.py
 dynamics/, visualization/, figures/, *.ipynb   # simulators, plots and research notebooks from the RFA paper
 tests/
 ```
