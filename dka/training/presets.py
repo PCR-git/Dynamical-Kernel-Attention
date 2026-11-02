@@ -129,10 +129,11 @@ PRESETS = {
     "D3.T": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_temperature=True),
     # --- Spectrum: b sets each head's Q = 1 / (2b) (phase advance 1/b rad over its horizon 1/mu), the base sets
     # the range. Bases chosen so the slowest head keeps D3's horizon 1/mu = 625 tokens (see _BASE_B02 above).
-    "D3.b02": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5),
-    "D3.b05": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5),
-    "D3.b02.T": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5, dka_temperature=True),
-    "D3.b05.T": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5, dka_temperature=True),
+    # These include the learned temperature (as RFA does); the .noT variants turn it off.
+    "D3.b02": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5, dka_temperature=True),
+    "D3.b05": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5, dka_temperature=True),
+    "D3.b02.noT": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5),
+    "D3.b05.noT": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5),
     # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
     "M3.b02": dict(_SC, damping=0.2, rope_base=_BASE_B02, zero_frac=0.0, target_ss_process_var=0.5),
     "M3.b05": dict(_SC, damping=0.5, rope_base=_BASE_B05, zero_frac=0.0, target_ss_process_var=0.5),

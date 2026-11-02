@@ -74,6 +74,8 @@ def test_spectrum_presets():
         rfa = attn_layers(build_backbone(make_args(m, device="cpu")))[0]
         assert isinstance(dka, MultiheadIsotropicDKA) and isinstance(rfa, MultiheadIsotropicRFA)
         assert args.damping == b and abs(1 / dka.mu[0].item() - 625) < 1e-2, (d, 1 / dka.mu)
+        assert dka.config.temperature and dka.log_tau is not None, d
+        assert not attn_layers(build_backbone(make_args(d + ".noT", device="cpu")))[0].config.temperature, d
         omega, mu = init_spectrally_coupled_rope(8, 16, b=b, base=args.rope_base)
         assert torch.allclose(dka.omega, omega) and torch.allclose(dka.mu, mu), d
         assert torch.allclose(rfa.omega, omega) and torch.allclose(rfa.mu, mu) and (rfa.mu > 0).all(), m
