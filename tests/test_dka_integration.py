@@ -88,6 +88,16 @@ def test_spectrum_presets():
         for h, hv in (("312", 312.5), ("1250", 1250.0)):
             mu = attn_layers(build_backbone(make_args(f"D3.b0{int(b * 10)}.h{h}", device="cpu")))[0].mu
             assert abs(1 / mu[0].item() - hv) < 1e-2 * hv and abs(1 / mu[-1].item() - 1 / b) < 1e-4, (b, h)
+    for k, b in ((2, 0.2), (5, 0.5)):           # B5 / B10 at the new spectra, and the slope scale
+        base = make_args(f"D3.b0{k}", device="cpu").rope_base
+        for sfx, scale in (("", 1.0), (".x05", 0.5), (".x2", 2.0)):
+            layer = [x for x in build_backbone(make_args(f"B5.b0{k}{sfx}", device="cpu")).modules()
+                     if isinstance(x, MultiHeadAttentionLayer)][0]
+            _, mu = init_spectrally_coupled_rope(8, layer.rope.theta.shape[1], b=b, base=base)
+            assert torch.allclose(layer.bias_slopes.flatten(), 2 * scale * mu) and not layer.config.softmax_plus_one
+        layer = [x for x in build_backbone(make_args(f"B10.b0{k}", device="cpu")).modules()
+                 if isinstance(x, MultiHeadAttentionLayer)][0]
+        assert layer.config.softmax_plus_one and layer.config.rope_base == base
     # the default base is unchanged, and SC baselines take the base too
     assert torch.allclose(attn_layers(build_backbone(small("D3")))[0].omega, init_spectrally_coupled_rope(4, 4)[0])
     layer = [x for x in build_backbone(small("B5", rope_base=100.0)).modules() if isinstance(x, MultiHeadAttentionLayer)][0]

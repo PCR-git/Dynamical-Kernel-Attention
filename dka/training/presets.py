@@ -28,6 +28,7 @@ BASE_ARGS = dict(
     use_log_linear_decay=True, scale_decay_by_time_interval=True, max_fixed_decay=5.0,
     omega_rescale=1.0, learn_rotations=False,
     rope_base=10000.0,                # base of the RoPE spectrum (RoPE, SC-RoPE, SC-RFA and SC-DKA frequencies)
+    bias_slope_scale=1.0,             # B5 / B10: multiplies the coupled slopes 2 mu_h (1 = DKA's prediction)
 
     # RFA noise model
     use_ss_process_noise=False, target_ss_process_var=0.1, target_measurement_var=1.0,
@@ -158,6 +159,24 @@ PRESETS = {
     "M3.b05": dict(_SC, damping=0.5, rope_base=_BASE_B05, zero_frac=0.0, target_ss_process_var=0.5),
     "B1.b02": dict(use_rope=True, use_alibi=False, rope_base=_BASE_B02),
     "B1.b05": dict(use_rope=True, use_alibi=False, rope_base=_BASE_B05),
+    # B5 (and B10, for the 2x2 ablation) at the new spectra, and B5 with the slopes 2 mu_h scaled by 0.5 and 2:
+    # is DKA's predicted slope (log h = -2 mu dt) the best one?
+    "B5.b02": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.2, rope_base=_BASE_B02),
+    "B5.b02.x05": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.2, rope_base=_BASE_B02, bias_slope_scale=0.5),
+    "B5.b02.x2": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.2, rope_base=_BASE_B02, bias_slope_scale=2.0),
+    "B5.b05": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.5, rope_base=_BASE_B05),
+    "B5.b05.x05": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.5, rope_base=_BASE_B05, bias_slope_scale=0.5),
+    "B5.b05.x2": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.5, rope_base=_BASE_B05, bias_slope_scale=2.0),
+    "B10.b02": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.2, rope_base=_BASE_B02, use_softmax_one=True),
+    "B10.b05": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
+                  damping=0.5, rope_base=_BASE_B05, use_softmax_one=True),
 }
 
 

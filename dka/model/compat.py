@@ -44,7 +44,8 @@ def attention_config_from_args(args, d_model, n_heads, width):
                            kerple_log=getattr(args, "use_kerple_log", False),
                            softmax_plus_one=getattr(args, "use_softmax_one", False),
                            yarn_original_length=getattr(args, "yarn_original_length", None),
-                           rope_base=getattr(args, "rope_base", 10000.0))
+                           rope_base=getattr(args, "rope_base", 10000.0),
+                           bias_slope_scale=getattr(args, "bias_slope_scale", 1.0))
 
 
 def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim=None,

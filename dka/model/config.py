@@ -24,6 +24,7 @@ class AttentionConfig:
         softmax_plus_one: an extra null logit 0 in the softmax (Miller, 2023), so a head can attend to nothing
         yarn_original_length: training length; if set, RoPE / SC-RoPE apply YaRN zero-shot beyond it (inference)
         rope_base:     base of the RoPE / SC-RoPE spectrum (and of the coupled decays and bias slopes)
+        bias_slope_scale: multiplies the coupled bias slopes 2 mu_h (1 = DKA's prediction; tests whether it is best)
 
     The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
     B5 = sc_rope + coupled linear bias, B6 = kerple_log, B7 = xpos, B8 = NoPE, B9 = rope + softmax plus one.
@@ -40,6 +41,7 @@ class AttentionConfig:
     softmax_plus_one: bool = False
     yarn_original_length: Optional[int] = None
     rope_base: float = 10000.0
+    bias_slope_scale: float = 1.0
 
     def __post_init__(self):
         if self.width % self.n_heads != 0:

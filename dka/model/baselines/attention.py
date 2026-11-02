@@ -50,7 +50,7 @@ class MultiHeadAttentionLayer(nn.Module):
 
         if c.bias_damping is not None:
             _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.bias_damping, base=c.rope_base)
-            self.register_buffer("bias_slopes", (2 * mu).view(1, -1, 1, 1))  # log h = -2 mu dt
+            self.register_buffer("bias_slopes", (2 * c.bias_slope_scale * mu).view(1, -1, 1, 1))  # log h = -2 mu dt
 
         if c.kerple_log:
             self.kerple_p = nn.Parameter(2 * torch.rand(c.n_heads))

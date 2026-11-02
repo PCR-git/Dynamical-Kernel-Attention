@@ -164,7 +164,7 @@ one run takes 6-8 hours on one GPU. `run_queue.ps1` runs several trainings in se
 | D2.S, D3.S | DKA with evidence saturation (experimental) |
 | D2.N, D3.N | DKA without the null slot |
 | D3.T | D3 with a learned inverse temperature per head on the content term (frees the exponent from $\nu$) |
-| D3.b02, D3.b05 | DKA with $b = 0.2$ / $0.5$ and a smaller RoPE base (249 / 710), keeping D3's slowest head (horizon 625 tokens), with the learned temperature (.noT: without; .h312 / .h1250: slowest horizon 312 or 1250 tokens); M3.b02 / M3.b05 and B1.b02 / B1.b05 are the RFA and RoPE controls at the same spectrum |
+| D3.b02, D3.b05 | DKA with $b = 0.2$ / $0.5$ and a smaller RoPE base (249 / 710), keeping D3's slowest head (horizon 625 tokens), with the learned temperature (.noT: without; .h312 / .h1250: slowest horizon 312 or 1250 tokens); M3.b02 / M3.b05 and B1.b02 / B1.b05 are the RFA and RoPE controls at the same spectrum; B5.b02 / B5.b05 and B10.b02 / B10.b05 the ablations there, with .x05 / .x2 scaling B5's slopes $2\mu_h$ by 0.5 / 2 |
 | M1, M2, M3 | RFA (as in the RFA paper); M1.I-M3.I with the innovation output, as DKA |
 | M2.1-M2.8 | RFA ablations from the RFA paper |
 | B1-B10 | baselines: RoPE, ALiBi, RoPE + decay, SC-RoPE + decay, SC-RoPE + linear bias with slopes $2\mu_h$ (DKA without the noise model and null slot), KERPLE-log, xPos, NoPE, RoPE + softmax plus one, B5 + softmax plus one (DKA without the noise model) |
