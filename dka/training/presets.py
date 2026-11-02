@@ -61,10 +61,20 @@ BASE_ARGS = dict(
 )
 
 _SC = dict(use_SC_RoPE=True, scale_decay_by_time_interval=False, use_log_linear_decay=False)
-# Bases for the b = 0.2 and b = 0.5 spectra: the slowest head keeps D3's horizon 1/mu = 625 tokens. With 8 heads of
-# 16 frequencies head 0's largest frequency is base^(-112/128), so b * base^(-7/8) = 1/625, base = (625 b)^(8/7).
-_BASE_B02 = (625 * 0.2) ** (8 / 7)   # ~249
-_BASE_B05 = (625 * 0.5) ** (8 / 7)   # ~710
+def sc_base(b, horizon, n_heads=8, n_freqs=16):
+    """RoPE base for which the slowest SC head has decay horizon 1/mu = `horizon` tokens at damping b.
+
+    The SC spectrum splits base^(-k / (H F)), k = 0..H F - 1, across H heads of F frequencies, highest first, and
+    mu_h = b omega_h,max. The fastest head has omega_max = 1, so its horizon is 1/b whatever the base; the slowest
+    head's largest frequency is base^(-(H - 1) F / (H F)), so its horizon is base^((H - 1) / H) / b.
+    """
+    return (horizon * b) ** (n_heads / (n_heads - 1))
+
+
+# Spectra for the paper-size model (8 heads of 16 frequencies), parametrized by b and the slowest horizon.
+# 625 tokens is D3's slowest horizon (b = 5, base 10000), about 1.2 L.
+_BASE_B02 = sc_base(0.2, 625)       # ~249
+_BASE_B05 = sc_base(0.5, 625)       # ~710
 _DKA = dict(attention_type="dka", zero_frac=0.0)
 _NO_DLE = dict(zero_process_noise=True, zero_key_measurement_noise=True, additive_bias_type=0, multiplicative_bias_type=0)
 
@@ -135,6 +145,15 @@ PRESETS = {
     "D3.b02.noT": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5),
     "D3.b05.noT": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5),
     # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
+    # Slowest-horizon sweep (half and twice D3's 625 tokens) at b = 0.2 and 0.5, with the temperature
+    "D3.b02.h312": dict(_DKA, **_SC, damping=0.2, rope_base=sc_base(0.2, 312.5), target_ss_process_var=0.5,
+                      dka_temperature=True),
+    "D3.b02.h1250": dict(_DKA, **_SC, damping=0.2, rope_base=sc_base(0.2, 1250), target_ss_process_var=0.5,
+                      dka_temperature=True),
+    "D3.b05.h312": dict(_DKA, **_SC, damping=0.5, rope_base=sc_base(0.5, 312.5), target_ss_process_var=0.5,
+                      dka_temperature=True),
+    "D3.b05.h1250": dict(_DKA, **_SC, damping=0.5, rope_base=sc_base(0.5, 1250), target_ss_process_var=0.5,
+                      dka_temperature=True),
     "M3.b02": dict(_SC, damping=0.2, rope_base=_BASE_B02, zero_frac=0.0, target_ss_process_var=0.5),
     "M3.b05": dict(_SC, damping=0.5, rope_base=_BASE_B05, zero_frac=0.0, target_ss_process_var=0.5),
     "B1.b02": dict(use_rope=True, use_alibi=False, rope_base=_BASE_B02),

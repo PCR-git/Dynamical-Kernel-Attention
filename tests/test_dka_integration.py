@@ -83,6 +83,10 @@ def test_spectrum_presets():
         rope = _baseline(r).rope
         D = 2 * rope.theta.numel()
         assert torch.allclose(rope.theta, 1.0 / args.rope_base ** (torch.arange(0, D, 2).float() / D)), r
+    for b in (0.2, 0.5):                         # the slowest-horizon sweep, and the fastest head at 1/b
+        for h, hv in (("312", 312.5), ("1250", 1250.0)):
+            mu = attn_layers(build_backbone(make_args(f"D3.b0{int(b * 10)}.h{h}", device="cpu")))[0].mu
+            assert abs(1 / mu[0].item() - hv) < 1e-2 * hv and abs(1 / mu[-1].item() - 1 / b) < 1e-4, (b, h)
     # the default base is unchanged, and SC baselines take the base too
     assert torch.allclose(attn_layers(build_backbone(small("D3")))[0].omega, init_spectrally_coupled_rope(4, 4)[0])
     layer = [x for x in build_backbone(small("B5", rope_base=100.0)).modules() if isinstance(x, MultiHeadAttentionLayer)][0]
