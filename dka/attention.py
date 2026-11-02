@@ -42,8 +42,9 @@ class MultiheadIsotropicRFA(nn.Module):
 
         # --- Dynamics ---
         n_freqs = D // 2  # frequencies come in conjugate pairs (+omega, -omega) so that A is real
-        omega_sc, mu = init_spectrally_coupled_rope(H, n_freqs, b=c.damping, zero_frac=c.zero_decay_frac)
-        omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs)
+        omega_sc, mu = init_spectrally_coupled_rope(H, n_freqs, b=c.damping, zero_frac=c.zero_decay_frac,
+                                                    base=c.rope_base)
+        omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs, base=c.rope_base)
         if c.decay_init == "log_linear":
             mu = init_decay_per_head(H, min_decay=0.01, max_decay=0.95, zero_frac=c.zero_decay_frac)
         if c.zero_rotations:

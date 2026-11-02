@@ -63,6 +63,51 @@ def test_presets_build_dka():
         assert infos[0]["prior_weight"].shape == (4,) and infos[0]["step_mean"].shape == (4,), preset
 
 
+def test_spectrum_presets():
+    """D3.b02 / D3.b05 (paper size): mu_h = b omega_h,max on the RoPE spectrum with the preset's base, the slowest
+    head's horizon 1/mu is D3's 625 tokens, and the frequency range is 2 or 2.5 decades narrower than RoPE's 4; the
+    RFA twins (M3.b02 / M3.b05) have the same omega and mu with no zero-decay heads, and B1.b02 / B1.b05 use the
+    same base."""
+    for b, (d, m, r) in {0.2: ("D3.b02", "M3.b02", "B1.b02"), 0.5: ("D3.b05", "M3.b05", "B1.b05")}.items():
+        args = make_args(d, device="cpu")
+        dka = attn_layers(build_backbone(args))[0]
+        rfa = attn_layers(build_backbone(make_args(m, device="cpu")))[0]
+        assert isinstance(dka, MultiheadIsotropicDKA) and isinstance(rfa, MultiheadIsotropicRFA)
+        assert args.damping == b and abs(1 / dka.mu[0].item() - 625) < 1e-2, (d, 1 / dka.mu)
+        omega, mu = init_spectrally_coupled_rope(8, 16, b=b, base=args.rope_base)
+        assert torch.allclose(dka.omega, omega) and torch.allclose(dka.mu, mu), d
+        assert torch.allclose(rfa.omega, omega) and torch.allclose(rfa.mu, mu) and (rfa.mu > 0).all(), m
+        assert abs(math.log10(dka.omega.max() / dka.omega.min()) - math.log10(args.rope_base) * 127 / 128) < 1e-4
+        rope = _baseline(r).rope
+        D = 2 * rope.theta.numel()
+        assert torch.allclose(rope.theta, 1.0 / args.rope_base ** (torch.arange(0, D, 2).float() / D)), r
+    # the default base is unchanged, and SC baselines take the base too
+    assert torch.allclose(attn_layers(build_backbone(small("D3")))[0].omega, init_spectrally_coupled_rope(4, 4)[0])
+    layer = [x for x in build_backbone(small("B5", rope_base=100.0)).modules() if isinstance(x, MultiHeadAttentionLayer)][0]
+    n_freqs = layer.rope.theta.shape[1]
+    assert torch.allclose(layer.rope.theta, init_spectrally_coupled_rope(4, n_freqs, base=100.0)[0])
+    assert torch.allclose(layer.bias_slopes.flatten(), 2 * init_spectrally_coupled_rope(4, n_freqs, b=5.0, base=100.0)[1])
+
+
+def test_dka_temperature():
+    """D3.T: a learned inverse temperature per head on the evidence logits, initialized at tau = 1 (so D3.T starts
+    as D3 with the same weights); the null slot is not tempered, and tau gets gradients."""
+    torch.manual_seed(0)
+    net_t, net = build_backbone(small("D3.T")), build_backbone(small("D3"))
+    layer_t = attn_layers(net_t)[0]
+    assert layer_t.config.temperature and torch.equal(layer_t.log_tau.data, torch.zeros(4))
+    assert attn_layers(net)[0].log_tau is None
+    net.load_state_dict({k: v for k, v in net_t.state_dict().items() if "log_tau" not in k})
+    x = torch.randn(2, 10, 32)
+    assert torch.allclose(net_t(x)[0], net(x)[0], atol=1e-6)
+    net_t(x)[0].square().mean().backward()
+    assert all(m.log_tau.grad is not None and m.log_tau.grad.abs().sum() > 0 for m in attn_layers(net_t))
+    with torch.no_grad():                        # tau -> 0: every key's weight -> 1, the null slot keeps its weight
+        for m in attn_layers(net_t):
+            m.log_tau.fill_(-30.0)
+    assert torch.isfinite(net_t(x)[0]).all()
+
+
 def _baseline(preset):
     net = build_backbone(small(preset)).eval()
     return [m for m in net.modules() if isinstance(m, MultiHeadAttentionLayer)][0]

@@ -51,8 +51,9 @@ class MultiheadIsotropicDKA(nn.Module):
 
         # --- Dynamics (as in RFA) ---
         n_freqs = D // 2
-        omega_sc, mu = init_spectrally_coupled_rope(H, n_freqs, b=c.damping, zero_frac=c.zero_decay_frac)
-        omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs)
+        omega_sc, mu = init_spectrally_coupled_rope(H, n_freqs, b=c.damping, zero_frac=c.zero_decay_frac,
+                                                    base=c.rope_base)
+        omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs, base=c.rope_base)
         if c.decay_init == "log_linear":
             mu = init_decay_per_head(H, min_decay=0.01, max_decay=0.95, zero_frac=c.zero_decay_frac)
         mu = mu * c.decay_scale
@@ -98,6 +99,9 @@ class MultiheadIsotropicDKA(nn.Module):
                 self.register_buffer("log_n_sat", log_n_sat)
         else:
             self.log_n_sat = None
+
+        # --- Inverse temperature on the evidence logits ---
+        self.log_tau = nn.Parameter(torch.zeros(H)) if c.temperature else None
 
         init_complex_linear_(self.W_q, init_complex_matrix(c.d_model, width), "in")
         init_complex_linear_(self.W_k, init_complex_matrix(c.d_model, width), "in")
@@ -176,6 +180,8 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         R_sq = dka_residual_norm_sq(Q, K, E, h, c_noise)
         logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
+        if self.log_tau is not None:                                            # tempered likelihood p^tau
+            logits = logits * torch.exp(self.log_tau)
         if causal:
             mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))

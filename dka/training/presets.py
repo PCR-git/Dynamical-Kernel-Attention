@@ -27,6 +27,7 @@ BASE_ARGS = dict(
     use_SC_RoPE=False, damping=0.05, zero_frac=0.25,
     use_log_linear_decay=True, scale_decay_by_time_interval=True, max_fixed_decay=5.0,
     omega_rescale=1.0, learn_rotations=False,
+    rope_base=10000.0,                # base of the RoPE spectrum (RoPE, SC-RoPE, SC-RFA and SC-DKA frequencies)
 
     # RFA noise model
     use_ss_process_noise=False, target_ss_process_var=0.1, target_measurement_var=1.0,
@@ -51,6 +52,7 @@ BASE_ARGS = dict(
     dka_learn_inflation=True,
     dka_saturation=None,              # None = independent tokens; n_sat > 0 = evidence saturates at n_sat / eta^2 (R12)
     dka_learn_saturation=True,
+    dka_temperature=False,            # True = learned inverse temperature per head on DKA's evidence logits
 
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
@@ -59,6 +61,10 @@ BASE_ARGS = dict(
 )
 
 _SC = dict(use_SC_RoPE=True, scale_decay_by_time_interval=False, use_log_linear_decay=False)
+# Bases for the b = 0.2 and b = 0.5 spectra: the slowest head keeps D3's horizon 1/mu = 625 tokens. With 8 heads of
+# 16 frequencies head 0's largest frequency is base^(-112/128), so b * base^(-7/8) = 1/625, base = (625 b)^(8/7).
+_BASE_B02 = (625 * 0.2) ** (8 / 7)   # ~249
+_BASE_B05 = (625 * 0.5) ** (8 / 7)   # ~710
 _DKA = dict(attention_type="dka", zero_frac=0.0)
 _NO_DLE = dict(zero_process_noise=True, zero_key_measurement_noise=True, additive_bias_type=0, multiplicative_bias_type=0)
 
@@ -119,6 +125,19 @@ PRESETS = {
     # No null slot (gamma^-2 = 0), stationary measurement model kept: isolates the null slot (vs D2 / D3)
     "D2.N": dict(_DKA, **_SC, damping=0.05, dka_prior="none"),
     "D3.N": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_prior="none"),
+    # Learned inverse temperature on the evidence logits (null slot untempered)
+    "D3.T": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_temperature=True),
+    # --- Spectrum: b sets each head's Q = 1 / (2b) (phase advance 1/b rad over its horizon 1/mu), the base sets
+    # the range. Bases chosen so the slowest head keeps D3's horizon 1/mu = 625 tokens (see _BASE_B02 above).
+    "D3.b02": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5),
+    "D3.b05": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5),
+    "D3.b02.T": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5, dka_temperature=True),
+    "D3.b05.T": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5, dka_temperature=True),
+    # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
+    "M3.b02": dict(_SC, damping=0.2, rope_base=_BASE_B02, zero_frac=0.0, target_ss_process_var=0.5),
+    "M3.b05": dict(_SC, damping=0.5, rope_base=_BASE_B05, zero_frac=0.0, target_ss_process_var=0.5),
+    "B1.b02": dict(use_rope=True, use_alibi=False, rope_base=_BASE_B02),
+    "B1.b05": dict(use_rope=True, use_alibi=False, rope_base=_BASE_B05),
 }
 
 

@@ -32,9 +32,10 @@ class MultiHeadAttentionLayer(nn.Module):
         self.output_projection = nn.Linear(c.width, c.d_model)
 
         if c.rope == "rope":
-            self.rope = RoPE(self.head_dim, yarn_original_length=c.yarn_original_length)
+            self.rope = RoPE(self.head_dim, base=c.rope_base, yarn_original_length=c.yarn_original_length)
         elif c.rope == "sc_rope":
-            self.rope = SCRoPE(self.head_dim, n_heads=c.n_heads, yarn_original_length=c.yarn_original_length)
+            self.rope = SCRoPE(self.head_dim, n_heads=c.n_heads, base=c.rope_base,
+                               yarn_original_length=c.yarn_original_length)
         elif c.rope == "xpos":
             self.rope = XPos(self.head_dim)
         else:
@@ -44,11 +45,11 @@ class MultiHeadAttentionLayer(nn.Module):
             self.register_buffer("alibi_slopes", get_alibi_slopes(c.n_heads))  # [1, H, 1, 1]
 
         if c.decay_damping is not None:
-            _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.decay_damping)
+            _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.decay_damping, base=c.rope_base)
             self.register_buffer("mu", mu)
 
         if c.bias_damping is not None:
-            _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.bias_damping)
+            _, mu = init_spectrally_coupled_rope(c.n_heads, self.head_dim // 2, b=c.bias_damping, base=c.rope_base)
             self.register_buffer("bias_slopes", (2 * mu).view(1, -1, 1, 1))  # log h = -2 mu dt
 
         if c.kerple_log:

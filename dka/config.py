@@ -23,6 +23,7 @@ class RFAConfig:
     zero_decay_frac: float = 0.25    # Fraction of (lowest-frequency) heads with mu = 0
     decay_scale: float = 1.0         # Multiplies the initial decay rates
     omega_rescale: float = 1.0       # Multiplies all rotation frequencies
+    rope_base: float = 10000.0       # base of the RoPE spectrum the frequencies are taken from
     learn_rotations: bool = False
 
     # --- Noise model ---
@@ -90,6 +91,7 @@ class RFAConfig:
             zero_decay_frac=args.zero_frac,
             decay_scale=decay_scale,
             omega_rescale=args.omega_rescale,
+            rope_base=getattr(args, "rope_base", 10000.0),
             learn_rotations=args.learn_rotations,
             process_noise="steady_state" if args.use_ss_process_noise else "variance",
             init_steady_state_var=args.target_ss_process_var,
@@ -130,6 +132,7 @@ class DKAConfig:
     zero_decay_frac: float = 0.0     # DKA uses slow heads rather than mu = 0 (the mu = 0 path is supported)
     decay_scale: float = 1.0
     omega_rescale: float = 1.0
+    rope_base: float = 10000.0
     learn_rotations: bool = False
 
     # --- Noise model ---
@@ -167,6 +170,10 @@ class DKAConfig:
     saturation: Optional[float] = None
     learn_saturation: bool = True
 
+    # --- Inverse temperature: False = none; True = a learned tau_h > 0 per head multiplies the evidence logits ---
+    # (a tempered likelihood a = p^tau, initialized at tau = 1; the null slot is not tempered)
+    temperature: bool = False
+
     # --- Numerics ---
     epsilon: float = 1e-5
 
@@ -202,6 +209,7 @@ class DKAConfig:
             zero_decay_frac=args.zero_frac,
             decay_scale=decay_scale,
             omega_rescale=args.omega_rescale,
+            rope_base=getattr(args, "rope_base", 10000.0),
             learn_rotations=args.learn_rotations,
             process_noise="steady_state" if args.use_ss_process_noise else "variance",
             init_steady_state_var=args.target_ss_process_var,
@@ -215,6 +223,7 @@ class DKAConfig:
             learn_inflation=getattr(args, "dka_learn_inflation", True),
             saturation=getattr(args, "dka_saturation", None),
             learn_saturation=getattr(args, "dka_learn_saturation", True),
+            temperature=getattr(args, "dka_temperature", False),
             epsilon=args.epsilon,
         )
 
