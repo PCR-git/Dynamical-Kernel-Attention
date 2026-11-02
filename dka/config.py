@@ -170,8 +170,10 @@ class DKAConfig:
     saturation: Optional[float] = None
     learn_saturation: bool = True
 
-    # --- Inverse temperature: False = none; True = a learned tau_h > 0 per head multiplies the evidence logits ---
-    # (a tempered likelihood a = p^tau, initialized at tau = 1; the null slot is not tempered)
+    # --- Inverse temperature: False = none; True = a learned tau_h > 0 per head (initialized at 1) multiplies the
+    # content term of the logits, -kappa log(1 + R^2 / (nu Sigma)), i.e. frees the exponent kappa from nu (a Pearson
+    # type VII likelihood). -log Sigma and the null slot are not tempered, so S stays the information, a <= 1/Sigma,
+    # and one agreeing token still takes the step 1 / (1 + c_h).
     temperature: bool = False
 
     # --- Numerics ---

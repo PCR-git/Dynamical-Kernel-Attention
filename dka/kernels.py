@@ -88,6 +88,20 @@ def robust_logits(R_sq, Sigma, nu, d, robust_weight=True, dle_bias=True, dle_gat
     return bias - gate * R_sq
 
 
+def temper_content(logits, Sigma, tau):
+    """
+    Robust logits L = -log Sigma + content with only the content term multiplied by tau:
+
+        -log Sigma + tau * (L + log Sigma)  =  -log Sigma - tau kappa log(1 + R^2 / (nu Sigma))
+
+    In agreement (R = 0) the content term is 0, so a key's weight is still 1/Sigma whatever tau: S stays the
+    information, the null slot keeps its calibration and a <= 1/Sigma. tau frees the exponent from nu (a Pearson
+    type VII likelihood, of which the Student-t is the case tau = 1). Masked logits (-inf) stay -inf for tau > 0.
+    """
+    log_sigma = torch.log(Sigma)
+    return tau * (logits + log_sigma) - log_sigma
+
+
 # ---------------------------------------------------------------------------------------------------
 # DKA (Dynamical_Kernel_Attention.tex)
 # ---------------------------------------------------------------------------------------------------

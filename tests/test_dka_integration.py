@@ -21,6 +21,7 @@ sys.path.insert(0, REPO)
 
 from dka import MultiheadIsotropicDKA, MultiheadIsotropicRFA, DKAConfig
 from dka.init import init_spectrally_coupled_rope
+from dka.kernels import robust_logits, temper_content
 from dka.model.baselines import MultiHeadAttentionLayer, RoPE, XPos
 from dka.model import (Backbone, BackboneConfig, LanguageModel, RFATransformerNetwork, print_layer_diagnostics,
                        get_model_sde_snapshots)
@@ -96,8 +97,9 @@ def test_spectrum_presets():
 
 
 def test_dka_temperature():
-    """D3.T: a learned inverse temperature per head on the evidence logits, initialized at tau = 1 (so D3.T starts
-    as D3 with the same weights); the null slot is not tempered, and tau gets gradients."""
+    """D3.T: a learned inverse temperature per head on the content term, initialized at tau = 1 (so D3.T starts as
+    D3 with the same weights), with gradients; in agreement (R = 0) a key's logit is -log Sigma whatever tau, so S
+    stays the information and a <= 1/Sigma."""
     torch.manual_seed(0)
     net_t, net = build_backbone(small("D3.T")), build_backbone(small("D3"))
     layer_t = attn_layers(net_t)[0]
@@ -108,7 +110,15 @@ def test_dka_temperature():
     assert torch.allclose(net_t(x)[0], net(x)[0], atol=1e-6)
     net_t(x)[0].square().mean().backward()
     assert all(m.log_tau.grad is not None and m.log_tau.grad.abs().sum() > 0 for m in attn_layers(net_t))
-    with torch.no_grad():                        # tau -> 0: every key's weight -> 1, the null slot keeps its weight
+    Sigma, R_sq = torch.rand(3, 5) + 0.1, torch.rand(3, 5) * 4
+    L = robust_logits(R_sq, Sigma, torch.tensor(4.0), 8)
+    for tau in (0.3, 1.0, 2.0):
+        assert torch.allclose(temper_content(robust_logits(torch.zeros_like(R_sq), Sigma, torch.tensor(4.0), 8), Sigma,
+                                             torch.tensor(tau)), -torch.log(Sigma))
+        assert (temper_content(L, Sigma, torch.tensor(tau)) <= -torch.log(Sigma) + 1e-6).all()
+        assert torch.allclose(temper_content(L, Sigma, torch.tensor(tau)),
+                              robust_logits(R_sq, Sigma, torch.tensor(4.0), 8, kappa=tau * (4.0 + 8) / 8), atol=1e-5)
+    with torch.no_grad():                        # tau -> 0: the weights depend only on the lag (-log Sigma)
         for m in attn_layers(net_t):
             m.log_tau.fill_(-30.0)
     assert torch.isfinite(net_t(x)[0]).all()

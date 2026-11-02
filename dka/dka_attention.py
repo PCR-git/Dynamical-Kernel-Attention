@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
-from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, inflation_terms, dka_covariance,
+from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, inflation_terms, dka_covariance,
                       dka_residual_norm_sq, calibrated_evidence)
 
 
@@ -100,7 +100,7 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             self.log_n_sat = None
 
-        # --- Inverse temperature on the evidence logits ---
+        # --- Inverse temperature on the content term of the logits (not on -log Sigma or the null slot) ---
         self.log_tau = nn.Parameter(torch.zeros(H)) if c.temperature else None
 
         init_complex_linear_(self.W_q, init_complex_matrix(c.d_model, width), "in")
@@ -180,8 +180,8 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         R_sq = dka_residual_norm_sq(Q, K, E, h, c_noise)
         logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
-        if self.log_tau is not None:                                            # tempered likelihood p^tau
-            logits = logits * torch.exp(self.log_tau)
+        if self.log_tau is not None:                                            # content term only (Pearson VII)
+            logits = temper_content(logits, Sigma, torch.exp(self.log_tau))
         if causal:
             mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))

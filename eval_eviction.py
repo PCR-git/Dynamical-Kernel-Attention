@@ -39,6 +39,7 @@ import torch
 import torch.nn.functional as F
 import dka.attention as ra
 import dka.dka_attention as da
+from dka.kernels import temper_content
 from dka.attention import MultiheadIsotropicRFA
 import dka.model.baselines.attention as bl
 from dka.dka_attention import MultiheadIsotropicDKA
@@ -109,9 +110,7 @@ def bound_T(module, eps, N):
         lag = torch.arange(N, dtype=torch.float64)[:, None]
         E = torch.exp(-mu * lag)
         Sigma = v_inf * (1 - E * E) + eta_sq
-        tau = (torch.exp(module.log_tau.detach().cpu().double()) if getattr(module, "log_tau", None) is not None
-               else torch.ones_like(mu))
-        term = (E + 2 * E * E) * Sigma ** (-tau)                               # [N, H]; a <= Sigma^-tau
+        term = (E + 2 * E * E) / Sigma                                         # [N, H]
         tail = term.flip(0).cumsum(0).flip(0) * eta_sq / c_over                # B(T) for T = 0..N-1
         ok = tail <= eps
         return torch.where(ok.any(0), ok.double().argmax(0), torch.full_like(mu, N)).clamp(min=1).long()
@@ -169,8 +168,8 @@ def wrap_logits(fn):                     # DKA logits [B, Nq, Nk, H]
             if isinstance(CUT["layer"], MultiheadIsotropicRFA):
                 with torch.no_grad():
                     L_eff = CUT["layer"].sde_params()["tau"].to(L.device) * L
-            elif getattr(CUT["layer"], "log_tau", None) is not None:           # DKA with a temperature
-                L_eff = torch.exp(CUT["layer"].log_tau.detach()).to(L.device) * L
+            elif getattr(CUT["layer"], "log_tau", None) is not None:           # DKA, tempered content term
+                L_eff = temper_content(L, a[1], torch.exp(CUT["layer"].log_tau.detach()).to(L.device))
             else:
                 L_eff = L
             z = (L_eff - lag[None, :, :, None] * s[None, None, None, :]).masked_fill(

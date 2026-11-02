@@ -52,7 +52,7 @@ BASE_ARGS = dict(
     dka_learn_inflation=True,
     dka_saturation=None,              # None = independent tokens; n_sat > 0 = evidence saturates at n_sat / eta^2 (R12)
     dka_learn_saturation=True,
-    dka_temperature=False,            # True = learned inverse temperature per head on DKA's evidence logits
+    dka_temperature=False,            # True = learned inverse temperature per head on DKA's content term
 
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
@@ -135,7 +135,7 @@ PRESETS = {
     # No null slot (gamma^-2 = 0), stationary measurement model kept: isolates the null slot (vs D2 / D3)
     "D2.N": dict(_DKA, **_SC, damping=0.05, dka_prior="none"),
     "D3.N": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_prior="none"),
-    # Learned inverse temperature on the evidence logits (null slot untempered)
+    # Learned inverse temperature on the content term (frees kappa from nu; -log Sigma and the null slot unchanged)
     "D3.T": dict(_DKA, **_SC, damping=5.0, target_ss_process_var=0.5, dka_temperature=True),
     # --- Spectrum: b sets each head's Q = 1 / (2b) (phase advance 1/b rad over its horizon 1/mu), the base sets
     # the range. Bases chosen so the slowest head keeps D3's horizon 1/mu = 625 tokens (see _BASE_B02 above).
