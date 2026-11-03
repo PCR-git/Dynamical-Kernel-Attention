@@ -153,6 +153,8 @@ PRESETS = {
     "M3.b05.r1e4": dict(_SC, damping=0.5, zero_frac=0.0, target_ss_process_var=0.5),
     "D3.b1.r1e4": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True),   # b = 1, base 10^4
     "M3.b1.r1e4": dict(_SC, damping=1.0, zero_frac=0.0, target_ss_process_var=0.5),
+    "D3.b1.r1e4.N": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True,
+                         dka_prior="none"),                                 # without the null slot
     "D3.b05.r1e4.N": dict(_DKA, **_SC, damping=0.5, target_ss_process_var=0.5, dka_temperature=True,
                           dka_prior="none"),                                # without the null slot
     # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
