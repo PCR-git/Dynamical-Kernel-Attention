@@ -151,6 +151,8 @@ PRESETS = {
     # b = 0.5 at RoPE's base 10^4 (the best SC-RFA damping in the RFA paper) and its RFA twin, no zero-decay heads
     "D3.b05.r1e4": dict(_DKA, **_SC, damping=0.5, target_ss_process_var=0.5, dka_temperature=True),
     "M3.b05.r1e4": dict(_SC, damping=0.5, zero_frac=0.0, target_ss_process_var=0.5),
+    "D3.b05.r1e4.N": dict(_DKA, **_SC, damping=0.5, target_ss_process_var=0.5, dka_temperature=True,
+                          dka_prior="none"),                                # without the null slot
     # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
     # Slowest-horizon sweep at b = 0.2 and 0.5, with the temperature: a half and a quarter of D3's 625 tokens
     # (D3.b05 at 625 does not extrapolate: its phases turn ~1/b rad per horizon over lags never seen in training)
