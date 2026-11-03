@@ -145,15 +145,19 @@ PRESETS = {
     "D3.b05": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5, dka_temperature=True),
     "D3.b02.noT": dict(_DKA, **_SC, damping=0.2, rope_base=_BASE_B02, target_ss_process_var=0.5),
     "D3.b05.noT": dict(_DKA, **_SC, damping=0.5, rope_base=_BASE_B05, target_ss_process_var=0.5),
+    # b = 1 and 2 at the same slowest horizon (625 tokens): locate the extrapolation boundary along b
+    "D3.b1": dict(_DKA, **_SC, damping=1.0, rope_base=sc_base(1.0, 625), target_ss_process_var=0.5, dka_temperature=True),
+    "D3.b2": dict(_DKA, **_SC, damping=2.0, rope_base=sc_base(2.0, 625), target_ss_process_var=0.5, dka_temperature=True),
     # Fair controls at the same spectrum: SC-RFA (no zero-decay heads) and RoPE with the same base
-    # Slowest-horizon sweep (half and twice D3's 625 tokens) at b = 0.2 and 0.5, with the temperature
+    # Slowest-horizon sweep at b = 0.2 and 0.5, with the temperature: a half and a quarter of D3's 625 tokens
+    # (D3.b05 at 625 does not extrapolate: its phases turn ~1/b rad per horizon over lags never seen in training)
     "D3.b02.h312": dict(_DKA, **_SC, damping=0.2, rope_base=sc_base(0.2, 312.5), target_ss_process_var=0.5,
                       dka_temperature=True),
-    "D3.b02.h1250": dict(_DKA, **_SC, damping=0.2, rope_base=sc_base(0.2, 1250), target_ss_process_var=0.5,
+    "D3.b02.h156": dict(_DKA, **_SC, damping=0.2, rope_base=sc_base(0.2, 156.25), target_ss_process_var=0.5,
                       dka_temperature=True),
     "D3.b05.h312": dict(_DKA, **_SC, damping=0.5, rope_base=sc_base(0.5, 312.5), target_ss_process_var=0.5,
                       dka_temperature=True),
-    "D3.b05.h1250": dict(_DKA, **_SC, damping=0.5, rope_base=sc_base(0.5, 1250), target_ss_process_var=0.5,
+    "D3.b05.h156": dict(_DKA, **_SC, damping=0.5, rope_base=sc_base(0.5, 156.25), target_ss_process_var=0.5,
                       dka_temperature=True),
     "M3.b02": dict(_SC, damping=0.2, rope_base=_BASE_B02, zero_frac=0.0, target_ss_process_var=0.5),
     "M3.b05": dict(_SC, damping=0.5, rope_base=_BASE_B05, zero_frac=0.0, target_ss_process_var=0.5),

@@ -85,7 +85,7 @@ def test_spectrum_presets():
         D = 2 * rope.theta.numel()
         assert torch.allclose(rope.theta, 1.0 / args.rope_base ** (torch.arange(0, D, 2).float() / D)), r
     for b in (0.2, 0.5):                         # the slowest-horizon sweep, and the fastest head at 1/b
-        for h, hv in (("312", 312.5), ("1250", 1250.0)):
+        for h, hv in (("312", 312.5), ("156", 156.25)):
             mu = attn_layers(build_backbone(make_args(f"D3.b0{int(b * 10)}.h{h}", device="cpu")))[0].mu
             assert abs(1 / mu[0].item() - hv) < 1e-2 * hv and abs(1 / mu[-1].item() - 1 / b) < 1e-4, (b, h)
     for k, b in ((2, 0.2), (5, 0.5)):           # B5 / B10 at the new spectra, and the slope scale
