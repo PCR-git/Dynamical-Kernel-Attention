@@ -29,6 +29,8 @@ dNLL p99 / p99.9: percentiles of the per-token change in NLL from full context, 
 usage: python eval_eviction.py <out.txt> <name=run_dir> [...] [--blocks N] [--length L] [--cpu]
        e.g. python eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date> B2=runs/wikitext103/B2__<date>
 Window sizes for the uniform, stream and h2o policies: SWEEP_W="32,64,128,256,512" (environment variable).
+SWEEP_BOUND_EPS / SWEEP_BOUNDCAP_EPS override the bound / boundcap eps lists; SWEEP_POLICIES="bound,cal" runs only
+those policies (and full context).
 Eviction is applied by masking the logits of the attention modules (DKA, RFA and baselines) in place, so the
 models run unchanged; this measures quality, not memory or speed.
 """
@@ -55,7 +57,9 @@ EPS = (0.5, 0.2, 0.05, 1e-2, 1e-3)
 N_SINKS = 4
 CUT = {"policy": None, "T": {}, "W": None, "layer": None, "kept": [], "prof": {}}
 CAL_EPS = (0.1, 0.03, 0.01, 3e-3, 1e-3)
-BOUND_EPS = (0.3, 0.1, 0.03, 0.01, 3e-3)
+BOUND_EPS = tuple(float(x) for x in os.environ.get("SWEEP_BOUND_EPS", "0.3,0.1,0.03,0.01,3e-3").split(","))
+BOUNDCAP_EPS = tuple(float(x) for x in os.environ.get("SWEEP_BOUNDCAP_EPS", "0.1,0.03,0.01").split(","))
+POLICIES = os.environ.get("SWEEP_POLICIES")    # e.g. "bound,boundcap,cal,calcap"; None = all (full context always)
 CAP = 512
 GRID = sorted({int(round(1.25 ** k)) for k in range(60)})
 
@@ -273,9 +277,11 @@ def main():
             settings += [("thresh", e) for e in EPS]
         settings += [("cal", e) for e in CAL_EPS] + [("calcap", e) for e in (0.03, 0.01)]
         if isinstance(attn[0], MultiheadIsotropicDKA):
-            settings += [("bound", e) for e in BOUND_EPS] + [("boundcap", e) for e in (0.1, 0.03, 0.01)]
+            settings += [("bound", e) for e in BOUND_EPS] + [("boundcap", e) for e in BOUNDCAP_EPS]
             for m in attn:
                 print(f"   bound T at eps=0.01: {bound_T(m, 0.01, N).tolist()}", flush=True)
+        if POLICIES:
+            settings = [x for x in settings if x[0] is None or x[0] in POLICIES.split(",")]
         CUT.update(policy="profile", prof={})
         run(model, cal_blocks, dev)
         for m in attn:
