@@ -24,10 +24,10 @@ from dka.training.lm_data import load_tokenizer, _raw_datasets, _tokenize, _grou
 from dka.training.presets import build_language_model
 
 
-def test_blocks(dataset, tokenizer, block_size, root, num_proc):
-    """[n_blocks, block_size] token ids of the test split, grouped as in training."""
+def test_blocks(dataset, tokenizer, block_size, root, num_proc, split="test"):
+    """[n_blocks, block_size] token ids of a split (default test), grouped as in training."""
     babylm = dataset == "babylm"
-    raw = _raw_datasets(dataset, root)["test"]
+    raw = _raw_datasets(dataset, root)[split]
     tok = raw.map(_tokenize, batched=True, num_proc=num_proc, remove_columns=["text"],
                   fn_kwargs={"tokenizer": tokenizer, "skip_blank": babylm})
     lm = tok.map(_group_texts, batched=True, num_proc=num_proc, fn_kwargs={"block_size": block_size})

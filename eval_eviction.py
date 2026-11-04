@@ -9,7 +9,7 @@ Policies (every head, every layer; lag 0 is always kept):
                  output: mu_h for DKA (the numerator weights a E), 2 mu_h for B5 (bias slope), the ALiBi slope for B2.
                  It ignores how the content logits vary with lag (e.g. DKA's logit floor, Sigma growing from eta^2).
   cal eps        head h keeps lags < T_h, the smallest lag at which the head's measured weight beyond T_h, averaged
-                 over queries, is below eps (calibrated on 8 held-out test blocks). Same rule for every model; for
+                 over queries, is below eps (calibrated on 8 validation blocks). Same rule for every model; for
                  DKA the weights are the numerator shares softmax(L - mu dt), for RFA softmax(tau L - mu dt) (E
                  multiplies the values after the softmax), for the baselines the softmax.
   bound eps      DKA only, content-independent: the robust weight is at most its value in agreement, a <= 1/Sigma,
@@ -254,7 +254,8 @@ def main():
     dev = torch.device("cpu" if cpu else "cuda")
     N = opt["--length"]
     all_blocks = test_blocks("wikitext103", load_tokenizer(), N, "datasets", 4)
-    blocks, cal_blocks = all_blocks[:opt["--blocks"]], all_blocks[opt["--blocks"]:opt["--blocks"] + 8]
+    blocks = all_blocks[:opt["--blocks"]]
+    cal_blocks = test_blocks("wikitext103", load_tokenizer(), N, "datasets", 4, split="validation")[:8]
     hdr = f"{'model':<6} {'policy':<14}{'cache':>8}{f'ppl {N // 2}-{N}':>14}{'ppl all':>9}{'dNLL p99':>10}{'p99.9':>8}"
     lines = [f"Eviction sweep at L = {N}, {len(blocks)} WikiText-103 test blocks", hdr]
     print("\n".join(lines), flush=True)
