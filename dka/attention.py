@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -70,6 +72,10 @@ class MultiheadIsotropicRFA(nn.Module):
         # --- Softmax temperature and robustness ---
         self.tau_raw = nn.Parameter(torch.ones(H))
         self.nu_raw = nn.Parameter(torch.full((H,), c.init_nu_over_d))
+
+        # --- Proximal prior on the current state (null slot), as in DKA ---
+        if c.prior == "tokens":
+            self.log_c = nn.Parameter(torch.full((H,), math.log(c.init_prior_weight)))
 
         init_complex_linear_(self.W_q, init_complex_matrix(c.d_model, width), "in")
         init_complex_linear_(self.W_k, init_complex_matrix(c.d_model, width), "in")
@@ -146,15 +152,32 @@ class MultiheadIsotropicRFA(nn.Module):
         if causal:
             mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
-        A = torch.softmax(logits, dim=2)  # normalize over keys j
+        if c.prior == "flat":
+            A = torch.softmax(logits, dim=2)  # normalize over keys j
 
-        # --- Aggregate decayed values, then rotate back (Phi^+) ---
-        est = torch.einsum("bijh,bjhdc->bihdc", A * E, V_agg)
-        if c.rotate_values:
-            est = rotate(est, cos, sin)
+            # --- Aggregate decayed values, then rotate back (Phi^+) ---
+            est = torch.einsum("bijh,bjhdc->bihdc", A * E, V_agg)
+            if c.rotate_values:
+                est = rotate(est, cos, sin)
 
-        # --- Innovation V_bar - V (or, for checkpoints trained before DKA, the estimate V_bar) ---
-        delta = est - V if c.output == "innovation" else est
+            # --- Innovation V_bar - V (or, for checkpoints trained before DKA, the estimate V_bar) ---
+            delta = est - V if c.output == "innovation" else est
+        else:
+            # --- Null slot: the logit of an agreeing lag-0 token plus log c_h (tempered like the logits) ---
+            Sigma0 = p["eta_sq"] + p["gamma_sq"] + c.cov_epsilon                    # lag-0 covariance [H]
+            null_logit = self.log_c + p["tau"] * robust_logits(
+                torch.zeros_like(Sigma0), Sigma0, p["nu"], c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate)
+            m = torch.maximum(logits.amax(dim=2), null_logit)                          # [B, N, H]
+            A_un = torch.exp(logits - m[:, :, None, :])
+            null = torch.exp(null_logit - m)
+            S = A_un.sum(dim=2)                                                       # evidence, h = 1
+            M = torch.einsum("bijh,bjhdc->bihdc", A_un * E, V_agg)
+            if c.rotate_values:
+                M = rotate(M, cos, sin)
+            dV = (M - S[..., None, None] * V) / (null + S)[..., None, None]           # proximal innovation
+            A = A_un / (null + S)[:, :, None, :]
+            est = V + dV
+            delta = dV if c.output == "innovation" else est
         out = self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1))  # [re heads..., im heads...]
 
         info = self._param_summary(p)

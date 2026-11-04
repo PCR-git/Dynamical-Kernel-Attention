@@ -206,7 +206,8 @@ class MultiheadIsotropicDKA(nn.Module):
         denom = null + S_eff                                                    # e^{-m} (gamma^-2 + S_eff_i)
         dV = (M - S_eff[..., None, None] * V) / denom[..., None, None]
 
-        out = self.W_o(dV.permute(0, 1, 4, 2, 3).reshape(B, N, -1))   # [re heads..., im heads...]
+        X = dV + V if c.output == "estimate" else dV                            # new estimate, or innovation
+        out = self.W_o(X.permute(0, 1, 4, 2, 3).reshape(B, N, -1))     # [re heads..., im heads...]
 
         info = self._param_summary(p)
         info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions

@@ -229,6 +229,56 @@ def test_no_null_slot():
         close(out_dka, out_rfa, 1e-9)
 
 
+def test_estimate_output():
+    """output="estimate" returns W_o (V + dV): it differs from the innovation output by exactly W_o V (no bias)."""
+    x, t = inputs(N=8)
+    inn = make_layer()
+    est = make_layer(output="estimate")
+    out_inn, _ = inn(x, t_measure=t)
+    out_est, _ = est(x, t_measure=t)
+    V = inn._project_in(inn.W_v, x)
+    B, N, _ = x.shape
+    close(out_est - out_inn, F.linear(V.permute(0, 1, 4, 2, 3).reshape(B, N, -1), inn.W_o.weight), 1e-12)
+
+
+def test_rfa_null_slot():
+    """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
+    inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""
+    x, t = inputs(N=8)
+    cfg = dict(d_model=D_MODEL, n_heads=H, head_dim=D, output="innovation")
+    flat = MultiheadIsotropicRFA(RFAConfig(**cfg)).double()
+    null = MultiheadIsotropicRFA(RFAConfig(**cfg, prior="tokens")).double()
+    null.load_state_dict(flat.state_dict(), strict=False)
+    with torch.no_grad():
+        null.log_c.fill_(-60.0)
+    close(null(x, t_measure=t)[0], flat(x, t_measure=t)[0], 1e-10)
+    with torch.no_grad():
+        null.log_c.fill_(0.5)
+    out, meta = null(x, t_measure=t, return_metadata=True)
+    assert torch.isfinite(out).all() and (meta["attn_mat"].sum(2) < 1).all()     # the null slot takes some mass
+    out.square().mean().backward()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in null.parameters())
+
+    for robust in (True, False):
+        dka = make_layer(prior="tokens", process_noise="steady_state", inflation=0.5, robust_weight=robust,
+                         mu=(0.05, 0.2, 0.4), epsilon=1e-12)
+        with torch.no_grad():
+            dka.theta.fill_(80.0)
+        out_dka, _ = dka(x, t_measure=t)
+        rfa = MultiheadIsotropicRFA(RFAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, process_noise="steady_state",
+                                              robust_weight=robust, epsilon=1e-12, cov_epsilon=0.0,
+                                              output="innovation", prior="tokens")).double()
+        with torch.no_grad():
+            for name in ("W_q", "W_k", "W_v", "W_o"):
+                getattr(rfa, name).load_state_dict(getattr(dka, name).state_dict())
+            for name in ("omega", "mu", "sigma_raw", "eta_raw", "nu_raw", "log_c"):
+                getattr(rfa, name).copy_(getattr(dka, name))
+            rfa.gamma_raw.fill_(-80.0)
+            rfa.tau_raw.fill_(math.log(math.expm1(1.0)))
+        out_rfa, _ = rfa(x, t_measure=t)
+        close(out_dka, out_rfa, 1e-9)
+
+
 def test_zero_decay_is_softmax_plus_one():
     """Section 3.4: for zero-decay heads (h = 1) and gamma^2 = 1, the update is a softmax over the innovations
     Phi+_i V~_j - V_i with one extra logit 0 for the null slot, whose innovation is zero."""

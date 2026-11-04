@@ -44,6 +44,8 @@ BASE_ARGS = dict(
     # Attention family of the non-baseline presets: "rfa" or "dka"
     attention_type="rfa",
     rfa_output="estimate",            # RFA: "estimate" (published runs) or "innovation" (paper Alg. 1, as DKA)
+    rfa_prior="flat",                 # RFA: "flat" (the paper) or "tokens" (DKA's null slot, gamma^-2 worth c_h tokens)
+    rfa_init_prior_weight=1.0,        # initial c_h for rfa_prior="tokens"
 
     # DKA (only used when attention_type="dka"; dynamics and noise use the RFA flags above)
     dka_prior="tokens",               # null slot gamma^-2 = c_h / eta^2 ("tokens"), c_h S_bar ("window"), "direct", or "none"
@@ -54,6 +56,7 @@ BASE_ARGS = dict(
     dka_saturation=None,              # None = independent tokens; n_sat > 0 = evidence saturates at n_sat / eta^2 (R12)
     dka_learn_saturation=True,
     dka_temperature=False,            # True = learned inverse temperature per head on DKA's content term
+    dka_output="innovation",          # "innovation" = W_o dV (the paper) or "estimate" = W_o (V + dV), as RFA's runs
 
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
@@ -153,6 +156,12 @@ PRESETS = {
     "M3.b05.r1e4": dict(_SC, damping=0.5, zero_frac=0.0, target_ss_process_var=0.5),
     "D3.b1.r1e4": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True),   # b = 1, base 10^4
     "M3.b1.r1e4": dict(_SC, damping=1.0, zero_frac=0.0, target_ss_process_var=0.5),
+    # Output form and null slot at b = 1, base 10^4: DKA in RFA's estimate form, and RFA with DKA's null slot
+    # (innovation form), which keeps the flat prior on past states (evidence sum a, not sum a E^2)
+    "D3.b1.r1e4.est": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True,
+                           dka_output="estimate"),
+    "M3.b1.r1e4.null": dict(_SC, damping=1.0, zero_frac=0.0, target_ss_process_var=0.5, rfa_output="innovation",
+                            rfa_prior="tokens"),
     "D3.b1.r1e4.N": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True,
                          dka_prior="none"),                                 # without the null slot
     "D3.b05.r1e4.N": dict(_DKA, **_SC, damping=0.5, target_ss_process_var=0.5, dka_temperature=True,

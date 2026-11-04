@@ -46,6 +46,10 @@ class RFAConfig:
     # --- Output: "innovation" = W_o (V_bar - V), as in the paper's Algorithm 1 (comparable with DKA);
     # "estimate" = W_o V_bar, as in the paper's experiments and all checkpoints trained before DKA ---
     output: Literal["innovation", "estimate"] = "innovation"
+    # --- Prior on the current state: "flat" = maximum likelihood (the paper's RFA); "tokens" = DKA's proximal prior,
+    # a null slot gamma^-2 worth c_h agreeing lag-0 tokens, giving dV = (M - S V) / (gamma^-2 + S) with S = sum a ---
+    prior: Literal["flat", "tokens"] = "flat"
+    init_prior_weight: float = 1.0
     zero_rotations: bool = False
     zero_decay: bool = False
     zero_process_noise: bool = False
@@ -102,6 +106,8 @@ class RFAConfig:
             full_residual_norm=bool(args.use_full_residual_norm),
             rotate_values=args.rotate_values,
             output=getattr(args, "rfa_output", "estimate"),
+            prior=getattr(args, "rfa_prior", "flat"),
+            init_prior_weight=getattr(args, "rfa_init_prior_weight", 1.0),
             zero_rotations=args.zero_rotations,
             zero_decay=args.lambda_real_zero,
             zero_process_noise=args.zero_process_noise,
@@ -176,6 +182,10 @@ class DKAConfig:
     # and one agreeing token still takes the step 1 / (1 + c_h).
     temperature: bool = False
 
+    # --- Output: "innovation" = W_o dV (the paper); "estimate" = W_o (V + dV), the new estimate itself, as in RFA's
+    # published runs (an abstaining head then passes its own value through) ---
+    output: Literal["innovation", "estimate"] = "innovation"
+
     # --- Numerics ---
     epsilon: float = 1e-5
 
@@ -226,6 +236,7 @@ class DKAConfig:
             saturation=getattr(args, "dka_saturation", None),
             learn_saturation=getattr(args, "dka_learn_saturation", True),
             temperature=getattr(args, "dka_temperature", False),
+            output=getattr(args, "dka_output", "innovation"),
             epsilon=args.epsilon,
         )
 
