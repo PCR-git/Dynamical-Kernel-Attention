@@ -14,10 +14,12 @@ Policies (every head, every layer; lag 0 is always kept):
                  multiplies the values after the softmax), for the baselines the softmax.
   bound eps      DKA only, content-independent: the robust weight is at most its value in agreement, a <= 1/Sigma,
                  and the denominator is at least the null slot gamma^-2 = c / eta^2, so dropping every key at lag
-                 >= T changes the head's update by at most
-                     B(T) = (eta^2 / c) sum_{lag >= T} (E + 2 E^2) / Sigma     (in units of the value norm)
-                 (E / Sigma from the numerator, E^2 / Sigma from S V and from the denominator). T_h = min T with
-                 B(T) <= eps. Uses only the learned mu, sigma^2, eta^2, c of each head.
+                 >= T changes the head's update by at most (memory-window proposition)
+                     B(T) = (eta^2 / c) sum_{lag >= T} (E + (2 + K) E^2) / Sigma     (in units of the value norm),
+                     K    = (eta^2 / c) sum_{lag >= 0} E / Sigma
+                 (E / Sigma from the numerator, E^2 / Sigma from S V, and K E^2 / Sigma from the denominator change
+                 times the update, whose norm is at most 1 + K since sum a E can exceed gamma^-2 + S).
+                 T_h = min T with B(T) <= eps. Uses only the learned mu, sigma^2, eta^2, c of each head.
   boundcap / calcap eps   the same windows capped at the training length (512), so no head keeps more than a
                  sliding window of the training length.
 
@@ -110,7 +112,8 @@ def bound_T(module, eps, N):
         lag = torch.arange(N, dtype=torch.float64)[:, None]
         E = torch.exp(-mu * lag)
         Sigma = v_inf * (1 - E * E) + eta_sq
-        term = (E + 2 * E * E) / Sigma                                         # [N, H]
+        K = (E / Sigma).sum(0) * eta_sq / c_over                               # [H], sum over the context
+        term = (E + (2 + K) * E * E) / Sigma                                   # [N, H]
         tail = term.flip(0).cumsum(0).flip(0) * eta_sq / c_over                # B(T) for T = 0..N-1
         ok = tail <= eps
         return torch.where(ok.any(0), ok.double().argmax(0), torch.full_like(mu, N)).clamp(min=1).long()
