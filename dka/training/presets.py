@@ -156,6 +156,8 @@ PRESETS = {
     "M3.b05.r1e4": dict(_SC, damping=0.5, zero_frac=0.0, target_ss_process_var=0.5),
     "D3.b1.r1e4": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True),   # b = 1, base 10^4
     "M3.b1.r1e4": dict(_SC, damping=1.0, zero_frac=0.0, target_ss_process_var=0.5),
+    # b = 2 at base 10^4 (slowest horizon ~1581): with b = 0.5, 1, 5 the spectrum sweep at RoPE's base
+    "D3.b2.r1e4": dict(_DKA, **_SC, damping=2.0, target_ss_process_var=0.5, dka_temperature=True),
     # Output form and null slot at b = 1, base 10^4: DKA in RFA's estimate form, and RFA with DKA's null slot
     # (innovation form), which keeps the flat prior on past states (evidence sum a, not sum a E^2)
     "D3.b1.r1e4.est": dict(_DKA, **_SC, damping=1.0, target_ss_process_var=0.5, dka_temperature=True,
