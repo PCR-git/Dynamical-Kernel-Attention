@@ -296,6 +296,20 @@ def test_mixture_weight():
     assert torch.isfinite(out).all() and layer.beta.grad is not None and "relevance_prior" in info
 
 
+def test_query_chunk():
+    """query_chunk computes the queries in blocks: the same output (irregular times, saturation, mixture, causal or not)."""
+    x, t = inputs(N=11)
+    for kw in (dict(), dict(saturation=1.0), dict(weight="mixture", temperature=True), dict(inflation=0.3)):
+        layer = make_layer(**kw)
+        for causal in (True, False):
+            ref, info = layer(x, t_measure=t, causal=causal)
+            layer.query_chunk = 4
+            out, info_c = layer(x, t_measure=t, causal=causal)
+            layer.query_chunk = None
+            close(out, ref, 1e-12)
+            close(info_c["step_mean"], info["step_mean"], 1e-12)
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

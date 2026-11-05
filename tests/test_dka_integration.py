@@ -292,9 +292,9 @@ def test_typed_backbone_matches_notebook_classes():
 
 
 def test_rfa_only_flags_raise():
-    """RFA ablation flags have no DKA counterpart and are refused rather than silently ignored."""
-    for flag, value in (("rotate_values", False), ("additive_bias_type", 0), ("zero_rotations", True),
-                        ("lambda_real_zero", True), ("use_full_residual_norm", 0)):
+    """RFA ablation flags with no DKA counterpart are refused rather than silently ignored (rotate_values and
+    zero_rotations have DKA counterparts and are checked in test_dka_layer.py)."""
+    for flag, value in (("additive_bias_type", 0), ("lambda_real_zero", True), ("use_full_residual_norm", 0)):
         try:
             build_backbone(small("D2", **{flag: value}))
         except ValueError:

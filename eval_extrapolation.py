@@ -3,6 +3,7 @@ Length extrapolation: test perplexity of trained language models at context leng
 
     python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/M2__2026-10-18 ...
     python eval_extrapolation.py --dataset wikitext103 --lengths 512 1024 2048 4096 8192 <run dirs>
+    (DKA layers process sequences longer than --query-chunk, default 4096, in blocks of queries)
 
 Protocol of the paper (Test LMs notebook): the test split is cut into non-overlapping blocks of L tokens,
 each block is one sequence (batch size 1), and the perplexity covers every next-token prediction in it.
@@ -66,6 +67,8 @@ def main():
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                    help="override fields of the checkpoint's args, e.g. yarn_original_length=512 (YaRN for RoPE)")
     p.add_argument("--label", default=None, help="suffix for the model name and extrapolation_<label>.txt")
+    p.add_argument("--query-chunk", type=int, default=4096,
+                   help="DKA layers process longer sequences in blocks of this many queries (same result, less memory)")
     cli = p.parse_args()
     overrides = {}
     for pair in cli.set:
@@ -91,6 +94,9 @@ def main():
         model = build_language_model(args).to(device)
         model.load_state_dict(ckpt["model_state_dict"])
         model.eval()
+        for m in model.modules():
+            if hasattr(m, "query_chunk"):
+                m.query_chunk = cli.query_chunk
         name = os.path.basename(os.path.normpath(run_dir)).split("__")[0] + (f"+{cli.label}" if cli.label else "")
         table[name] = {}
         lines = [f"# {ckpt_path} (preset {args.preset})", f"{'length':>6} {'test_ppl':>9} {'time_s':>7}"]

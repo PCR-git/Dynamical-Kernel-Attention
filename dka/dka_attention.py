@@ -108,6 +108,9 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Contamination model: beta_h = logit of the prior probability of relevance ---
         self.beta = nn.Parameter(torch.full((H,), c.init_relevance_logit)) if c.weight == "mixture" else None
 
+        # --- Evaluation memory: process the queries in blocks of this size (None = all at once) ---
+        self.query_chunk = None
+
         # --- QK normalization: |Q_i| = |K_j| = s_h ---
         self.log_qk_scale = (nn.Parameter(torch.full((H,), 0.5 * math.log(c.init_qk_scale_sq * D)))
                              if c.qk_norm else None)
@@ -172,15 +175,8 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             t = t_measure.to(p["mu"].dtype)
 
-        # --- Dynamics and conditioned measurement model (all [B|1, N, N, H]) ---
-        cos, sin = rotation_angles(p["omega"], t)
-        lags = pairwise_lags(t)
-        E = torch.exp(-p["mu"] * lags)
-        log_h, c_noise = inflation_terms(p["theta"], p["mu"], lags)
-        h = E * E if p["theta"] is None else torch.exp(log_h)
-        Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
-
         # --- Project and rotate into the stationary frame (Phi^-) ---
+        cos, sin = rotation_angles(p["omega"], t)
         Q = rotate(self._project_in(self.W_q, Z_q), cos, -sin)
         K = rotate(self._project_in(self.W_k, Z_k), cos, -sin)
         if self.log_qk_scale is not None:            # rotations preserve the norm
@@ -190,8 +186,38 @@ class MultiheadIsotropicDKA(nn.Module):
         V = self._project_in(self.W_v, Z_v)          # current estimate, in its own frame
         V_rot = rotate(V, cos, -sin) if c.rotate_values else V
 
+        # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
+        chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
+        rows = [self._rows(p, t, Q, K, V, V_rot, cos, sin, i0, min(i0 + chunk, N), causal)
+                for i0 in range(0, N, chunk)]
+        dV = torch.cat([r[0] for r in rows], dim=1)
+        S_eff = torch.cat([r[4] for r in rows], dim=1)
+        denom = torch.cat([r[6] for r in rows], dim=1)
+
+        X = dV + V if c.output == "estimate" else dV                            # new estimate, or innovation
+        out = self.W_o(X.permute(0, 1, 4, 2, 3).reshape(B, N, -1))     # [re heads..., im heads...]
+
+        info = self._param_summary(p)
+        info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
+        if return_metadata:
+            _, A_hat, null, S, _, m, _ = rows[0]
+            info.update(self._metadata(p, A_hat, null, S, S_eff, m, denom, dV))
+        return out, info
+
+    def _rows(self, p, t, Q, K, V, V_rot, cos, sin, i0, i1, causal):
+        """The update of queries i0..i1-1 against all keys: (dV, A_hat, null, S, S_eff, m, denom), rows i0..i1-1."""
+        c = self.config
+        N = K.shape[1]
+
+        # --- Dynamics and conditioned measurement model (all [B|1, nq, N, H]) ---
+        lags = (t[:, i0:i1, None] - t[:, None, :]).abs()[..., None]
+        E = torch.exp(-p["mu"] * lags)
+        log_h, c_noise = inflation_terms(p["theta"], p["mu"], lags)
+        h = E * E if p["theta"] is None else torch.exp(log_h)
+        Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
+
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
-        R_sq = dka_residual_norm_sq(Q, K, E, h, c_noise)
+        R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)
             Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
@@ -202,12 +228,12 @@ class MultiheadIsotropicDKA(nn.Module):
             if tau is not None:                                                 # content term only (Pearson VII)
                 logits = temper_content(logits, Sigma, tau)
         if causal:
-            mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
+            mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
 
         # --- Stabilized weights: subtract the max over the keys and the null slot (logit -log gamma^2) ---
         null_logit = p["log_prior_precision"]                                  # [H]
-        m = torch.maximum(logits.amax(dim=2), null_logit)                       # [B, N, H]
+        m = torch.maximum(logits.amax(dim=2), null_logit)                       # [B, nq, H]
         A = torch.exp(logits - m[:, :, None, :])
         null = torch.exp(null_logit - m)                                        # gamma^-2 e^{-m}
         S = (A * h).sum(dim=2)                                                  # information e^{-m} S_i
@@ -220,21 +246,13 @@ class MultiheadIsotropicDKA(nn.Module):
         A_hat = A * E
         M = torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot)
         if c.rotate_values:
-            M = rotate(M, cos, sin)
+            M = rotate(M, cos[:, i0:i1], sin[:, i0:i1])
         if p["log_saturation"] is not None:                                     # same estimate M / S, discounted step
             A_hat = A_hat * (S_eff / S)[:, :, None, :]
             M = M * (S_eff / S)[..., None, None]
         denom = null + S_eff                                                    # e^{-m} (gamma^-2 + S_eff_i)
-        dV = (M - S_eff[..., None, None] * V) / denom[..., None, None]
-
-        X = dV + V if c.output == "estimate" else dV                            # new estimate, or innovation
-        out = self.W_o(X.permute(0, 1, 4, 2, 3).reshape(B, N, -1))     # [re heads..., im heads...]
-
-        info = self._param_summary(p)
-        info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
-        if return_metadata:
-            info.update(self._metadata(p, A_hat, null, S, S_eff, m, denom, dV))
-        return out, info
+        dV = (M - S_eff[..., None, None] * V[:, i0:i1]) / denom[..., None, None]
+        return dV, A_hat, null, S, S_eff, m, denom
 
     # ------------------------------------------------------------------
 
