@@ -54,6 +54,8 @@ class MultiheadIsotropicDKA(nn.Module):
         omega_sc, mu = init_spectrally_coupled_rope(H, n_freqs, b=c.damping, zero_frac=c.zero_decay_frac,
                                                     base=c.rope_base)
         omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs, base=c.rope_base)
+        if c.zero_rotations:
+            omega = torch.zeros_like(omega)
         if c.decay_init == "log_linear":
             mu = init_decay_per_head(H, min_decay=0.01, max_decay=0.95, zero_frac=c.zero_decay_frac)
         mu = mu * c.decay_scale
@@ -102,6 +104,10 @@ class MultiheadIsotropicDKA(nn.Module):
 
         # --- Inverse temperature on the content term of the logits (not on -log Sigma or the null slot) ---
         self.log_tau = nn.Parameter(torch.zeros(H)) if c.temperature else None
+
+        # --- QK normalization: |Q_i| = |K_j| = s_h ---
+        self.log_qk_scale = (nn.Parameter(torch.full((H,), 0.5 * math.log(c.init_qk_scale_sq * D)))
+                             if c.qk_norm else None)
 
         init_complex_linear_(self.W_q, init_complex_matrix(c.d_model, width), "in")
         init_complex_linear_(self.W_k, init_complex_matrix(c.d_model, width), "in")
@@ -174,8 +180,12 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Project and rotate into the stationary frame (Phi^-) ---
         Q = rotate(self._project_in(self.W_q, Z_q), cos, -sin)
         K = rotate(self._project_in(self.W_k, Z_k), cos, -sin)
+        if self.log_qk_scale is not None:            # rotations preserve the norm
+            s = torch.exp(self.log_qk_scale)[:, None, None]
+            Q = s * Q / Q.pow(2).sum(dim=(-1, -2), keepdim=True).add(c.epsilon).sqrt()
+            K = s * K / K.pow(2).sum(dim=(-1, -2), keepdim=True).add(c.epsilon).sqrt()
         V = self._project_in(self.W_v, Z_v)          # current estimate, in its own frame
-        V_rot = rotate(V, cos, -sin)
+        V_rot = rotate(V, cos, -sin) if c.rotate_values else V
 
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         R_sq = dka_residual_norm_sq(Q, K, E, h, c_noise)
@@ -199,7 +209,9 @@ class MultiheadIsotropicDKA(nn.Module):
 
         # --- Aggregate decayed values, counter-rotate (Phi^+), proximal innovation ---
         A_hat = A * E
-        M = rotate(torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot), cos, sin)
+        M = torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot)
+        if c.rotate_values:
+            M = rotate(M, cos, sin)
         if p["log_saturation"] is not None:                                     # same estimate M / S, discounted step
             A_hat = A_hat * (S_eff / S)[:, :, None, :]
             M = M * (S_eff / S)[..., None, None]

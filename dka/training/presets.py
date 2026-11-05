@@ -208,6 +208,31 @@ PRESETS = {
 }
 
 
+# --- Ablation suite at base 10^4, for each candidate b: the full DKA (D3.<b>.r1e4) with one component removed ---
+#   .N      no null slot                       .est    estimate output W_o (V + dV)
+#   .noT    no learned temperature (tau = 1)   .exp    exponential weight instead of the Student-t
+#   .noVR   no value rotation                  .noR    no rotations (decay only)
+#   .nonSC  RoPE frequencies in every head, decays kept (frequency and decay uncoupled)
+#   .Z      variance inflation from zeta = 0.5 (toward RFA's flat prior)
+#   .qkn    QK normalization (an addition, not a removal)
+# plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
+# and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.
+_ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
+              "exp": dict(use_robust_weight=False), "noVR": dict(rotate_values=False), "noR": dict(zero_rotations=True),
+              "nonSC": dict(use_SC_RoPE=False), "Z": dict(dka_inflation=0.5), "qkn": dict(dka_qk_norm=True)}
+for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
+    _full = dict(_DKA, **_SC, damping=_b, target_ss_process_var=0.5, dka_temperature=True)
+    for _name, _change in _ABLATIONS.items():
+        PRESETS.setdefault(f"D3.{_tag}.r1e4.{_name}", dict(_full, **_change))
+    PRESETS.setdefault(f"M3.{_tag}.r1e4.null", dict(_SC, damping=_b, zero_frac=0.0, target_ss_process_var=0.5,
+                                                    rfa_output="innovation", rfa_prior="tokens"))
+    _b5 = dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=_b)
+    PRESETS.setdefault(f"B5.{_tag}.r1e4", _b5)
+    PRESETS.setdefault(f"B10.{_tag}.r1e4", dict(_b5, use_softmax_one=True))
+    for _x, _s in (("x05", 0.5), ("x2", 2.0)):
+        PRESETS.setdefault(f"B10.{_tag}.r1e4.{_x}", dict(_b5, use_softmax_one=True, bias_slope_scale=_s))
+
+
 def make_args(preset, **overrides):
     """Namespace of BASE_ARGS, updated with PRESETS[preset], then with `overrides`."""
     if preset not in PRESETS:

@@ -186,6 +186,12 @@ class DKAConfig:
     # published runs (an abstaining head then passes its own value through) ---
     output: Literal["innovation", "estimate"] = "innovation"
 
+    # --- Ablations (as RFA's M2.4 / M2.5) and QK normalization ---
+    rotate_values: bool = True       # False: aggregate the values in their own frames (no Phi^- / Phi^+ on V)
+    zero_rotations: bool = False     # True: omega = 0 (decay only; mu keeps its spectral initialization)
+    qk_norm: bool = False            # True: Q and K normalized per head to a learned length s_h (shared by Q and K)
+    init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
+
     # --- Numerics ---
     epsilon: float = 1e-5
 
@@ -237,11 +243,14 @@ class DKAConfig:
             learn_saturation=getattr(args, "dka_learn_saturation", True),
             temperature=getattr(args, "dka_temperature", False),
             output=getattr(args, "dka_output", "innovation"),
+            rotate_values=getattr(args, "rotate_values", True),
+            zero_rotations=getattr(args, "zero_rotations", False),
+            qk_norm=getattr(args, "dka_qk_norm", False),
             epsilon=args.epsilon,
         )
 
 
 # RFA ablation flags (args name -> RFA default) that have no DKA counterpart
 _RFA_ONLY_ARGS = {"additive_bias_type": 1, "multiplicative_bias_type": 1, "use_full_residual_norm": 1,
-                  "rotate_values": True, "zero_rotations": False, "lambda_real_zero": False,
+                  "lambda_real_zero": False,
                   "zero_process_noise": False, "zero_key_measurement_noise": False}

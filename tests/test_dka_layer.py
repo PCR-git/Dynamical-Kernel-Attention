@@ -241,6 +241,31 @@ def test_estimate_output():
     close(out_est - out_inn, F.linear(V.permute(0, 1, 4, 2, 3).reshape(B, N, -1), inn.W_o.weight), 1e-12)
 
 
+def test_rotation_ablations():
+    """zero_rotations zeroes omega and keeps mu; rotate_values=False changes the output only when omega != 0."""
+    layer = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, zero_rotations=True))
+    ref = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=D))
+    assert (layer.omega == 0).all() and torch.equal(layer.mu, ref.mu)
+    x, t = inputs(N=8)
+    rot, norot = make_layer(), make_layer(rotate_values=False)
+    assert (rot(x, t_measure=t)[0] - norot(x, t_measure=t)[0]).abs().max() > 1e-6
+    with torch.no_grad():
+        rot.omega.zero_()
+        norot.omega.zero_()
+    close(rot(x, t_measure=t)[0], norot(x, t_measure=t)[0], 1e-12)
+
+
+def test_qk_norm():
+    """qk_norm: the output is invariant to the scale of W_q and W_k, up to the epsilon in the norm (not without it)."""
+    x, t = inputs(N=8)
+    for qk, invariant in ((True, True), (False, False)):
+        a, b = make_layer(qk_norm=qk), make_layer(qk_norm=qk)
+        with torch.no_grad():
+            b.W_q.weight.mul_(3.0), b.W_q.bias.mul_(3.0), b.W_k.weight.mul_(0.5), b.W_k.bias.mul_(0.5)
+        err = (a(x, t_measure=t)[0] - b(x, t_measure=t)[0]).abs().max().item()
+        assert (err < 1e-3) == invariant, (qk, err)                     # 1e-3: the epsilon in the norm
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""
