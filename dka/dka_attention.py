@@ -56,6 +56,9 @@ class MultiheadIsotropicDKA(nn.Module):
         omega = omega_sc if c.frequency_init == "spectral" else init_rope(H, n_freqs, base=c.rope_base)
         if c.zero_rotations:
             omega = torch.zeros_like(omega)
+        if c.prope_length is not None:               # slow heads: no frequencies below one cycle per prope_length
+            slow = (mu * c.decay_scale * c.prope_length < 1)[:, None]                # horizon 1/mu > prope_length
+            omega = torch.where(slow & (2 * math.pi / omega > c.prope_length), torch.zeros_like(omega), omega)
         if c.decay_init == "log_linear":
             mu = init_decay_per_head(H, min_decay=0.01, max_decay=0.95, zero_frac=c.zero_decay_frac)
         mu = mu * c.decay_scale

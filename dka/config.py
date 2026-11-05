@@ -206,6 +206,9 @@ class DKAConfig:
     rotate_values: bool = True       # False: aggregate the values in their own frames (no Phi^- / Phi^+ on V)
     zero_rotations: bool = False     # True: omega = 0 (decay only; mu keeps its spectral initialization)
     qk_norm: bool = False            # True: Q and K normalized per head to a learned length s_h (shared by Q and K)
+    # p-RoPE (Barbero et al.): in heads whose horizon 1/mu exceeds this length (the training length), zero the
+    # frequencies too low to complete a cycle within it (period 2 pi / omega > length): position-free channels
+    prope_length: Optional[float] = None
     init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
 
     # --- Numerics ---
@@ -266,6 +269,7 @@ class DKAConfig:
             rotate_values=getattr(args, "rotate_values", True),
             zero_rotations=getattr(args, "zero_rotations", False),
             qk_norm=getattr(args, "dka_qk_norm", False),
+            prope_length=getattr(args, "prope_length", None),
             epsilon=args.epsilon,
         )
 

@@ -22,6 +22,7 @@ class MultiHeadAttentionLayer(nn.Module):
     def __init__(self, config: AttentionConfig):
         super().__init__()
         self.config = c = config
+        self.query_chunk = None       # evaluation memory: process the queries in blocks of this size (None = all)
         self.num_heads = c.n_heads
         self.head_dim = c.width // c.n_heads
 
@@ -77,12 +78,22 @@ class MultiHeadAttentionLayer(nn.Module):
 
         # [B, H, L, D_head]
         Q, K, V = Q.transpose(1, 2), K.transpose(1, 2), V.transpose(1, 2)
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        chunk = self.query_chunk if self.query_chunk and L > self.query_chunk else L
+        rows = [self._rows(Q, K, V, i0, min(i0 + chunk, L), causal) for i0 in range(0, L, chunk)]
+        context = torch.cat([r[0] for r in rows], dim=2).transpose(1, 2).reshape(B, L, c.width)
+        attn_weights = rows[0][1] if len(rows) == 1 else None   # the full matrix only without chunking
+        return self.output_projection(context), {"attn_mat": attn_weights}
+
+    def _rows(self, Q, K, V, i0, i1, causal):
+        """Attention of queries i0..i1-1 over all keys (Q, K, V: [B, H, L, D_head]): (context rows, weights)."""
+        c = self.config
+        L = K.shape[2]
+        scores = torch.matmul(Q[:, :, i0:i1], K.transpose(-2, -1)) / math.sqrt(self.head_dim)
         if c.yarn_original_length is not None and c.rope in ("rope", "sc_rope"):
             scores = scores * self.rope.yarn_logit_scale(L)
 
-        pos = torch.arange(L, device=x.device)
-        dist = (pos[:, None] - pos[None, :]).abs()  # [L, L]
+        pos = torch.arange(L, device=Q.device)
+        dist = (pos[i0:i1, None] - pos[None, :]).abs()  # [nq, L]
         if c.alibi:
             scores = scores - self.alibi_slopes * dist
         if c.bias_damping is not None:
@@ -92,7 +103,7 @@ class MultiHeadAttentionLayer(nn.Module):
             a = self.kerple_a.clamp(min=0.01).view(1, -1, 1, 1)
             scores = scores - p * torch.log1p(a * dist)
         if causal:
-            scores = scores.masked_fill(~torch.ones(L, L, dtype=torch.bool, device=x.device).tril(), float("-inf"))
+            scores = scores.masked_fill(pos[None, :] > pos[i0:i1, None], float("-inf"))
 
         if c.softmax_plus_one:                       # an extra null logit 0: weights sum to at most 1
             attn_weights = softmax_plus_one(scores)
@@ -100,6 +111,4 @@ class MultiHeadAttentionLayer(nn.Module):
             attn_weights = F.softmax(scores, dim=-1)
         if c.decay_damping is not None:
             attn_weights = attn_weights * torch.exp(-self.mu.view(1, -1, 1, 1) * dist)
-
-        context = torch.matmul(attn_weights, V).transpose(1, 2).reshape(B, L, c.width)
-        return self.output_projection(context), {"attn_mat": attn_weights}
+        return torch.matmul(attn_weights, V), attn_weights

@@ -213,6 +213,8 @@ PRESETS = {
 #   .noT    no learned temperature (tau = 1)   .exp    exponential weight instead of the Student-t
 #   .noVR   no value rotation                  .noR    no rotations (decay only)
 #   .nonSC  RoPE frequencies in every head, decays kept (frequency and decay uncoupled)
+#   .nonSC.prope  .nonSC with p-RoPE: in heads with horizon > 512, frequencies with period > 512 set to 0
+#   .prope  p-RoPE on the SC spectrum (the slow heads' frequencies all have periods > 512: they become decay-only)
 #   .Z      variance inflation from zeta = 0.5 (toward RFA's flat prior)
 #   .qkn    QK normalization (an addition, not a removal)
 #   .mix    contamination-model weight sigmoid(lambda + beta_h) instead of the Student-t (with the learned temperature)
@@ -221,7 +223,8 @@ PRESETS = {
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
               "exp": dict(use_robust_weight=False), "noVR": dict(rotate_values=False), "noR": dict(zero_rotations=True),
               "nonSC": dict(use_SC_RoPE=False), "Z": dict(dka_inflation=0.5), "qkn": dict(dka_qk_norm=True),
-              "mix": dict(dka_weight="mixture")}
+              "mix": dict(dka_weight="mixture"),
+              "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512)}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     _full = dict(_DKA, **_SC, damping=_b, target_ss_process_var=0.5, dka_temperature=True)
     for _name, _change in _ABLATIONS.items():

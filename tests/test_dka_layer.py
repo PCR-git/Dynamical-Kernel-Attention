@@ -310,6 +310,17 @@ def test_query_chunk():
             close(info_c["step_mean"], info["step_mean"], 1e-12)
 
 
+def test_prope():
+    """prope_length: heads with horizon above it lose the frequencies with period above it; other heads keep all."""
+    L = 512.0
+    layer = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=8, head_dim=32, damping=1.0, prope_length=L))
+    ref = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=8, head_dim=32, damping=1.0))
+    slow = (1 / ref.mu > L)[:, None]
+    low = 2 * math.pi / ref.omega > L
+    assert slow.any() and not slow.all()
+    assert torch.equal(layer.omega, torch.where(slow & low, torch.zeros_like(ref.omega), ref.omega))
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

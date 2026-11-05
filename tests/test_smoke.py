@@ -311,6 +311,24 @@ def test_gpu_paper_size():
     assert torch.isfinite(out).all()
 
 
+
+def test_query_chunk_models():
+    """query_chunk (RFA flat and null-slot priors, DKA, baselines with RoPE, ALiBi, coupled bias, softmax plus one)
+    gives the same logits as the full computation."""
+    from dka.training.presets import make_args as preset_args, build_language_model
+    x = torch.randint(0, 1000, (2, 37))
+    for preset in ("M3.b1.r1e4", "M3.b1.r1e4.null", "D3.b1.r1e4", "B1", "B2", "B10", "B3"):
+        torch.manual_seed(0)
+        model = build_language_model(preset_args(preset, device="cpu")).double().eval()
+        with torch.no_grad():
+            ref = model(x)[0]
+            for m in model.modules():
+                if hasattr(m, "query_chunk"):
+                    m.query_chunk = 8
+            out = model(x)[0]
+        err = (out - ref).abs().max().item()
+        assert err < 1e-9, (preset, err)
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

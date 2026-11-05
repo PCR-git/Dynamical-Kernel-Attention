@@ -33,6 +33,7 @@ class MultiheadIsotropicRFA(nn.Module):
     def __init__(self, config: RFAConfig):
         super().__init__()
         self.config = c = config
+        self.query_chunk = None       # evaluation memory: process the queries in blocks of this size (None = all)
         H, D = c.n_heads, c.head_dim
         width = H * D
 
@@ -131,59 +132,73 @@ class MultiheadIsotropicRFA(nn.Module):
         else:
             t = t_measure.to(p["mu"].dtype)
 
-        # --- Dynamics: rotations, decay kernel E and DLE covariance Sigma (all [B|1, N, N, H]) ---
-        cos, sin = rotation_angles(p["omega"], t)  # [B|1, N, H, D]
-        lags = pairwise_lags(t)
-        decay_exp = torch.clamp(-p["mu"] * lags, min=c.min_exponent, max=c.max_exponent)
-        E = torch.exp(decay_exp)
-        Sigma = lag_covariance(p["mu"], lags, decay_exp, p["process_var"], p["eta_sq"], p["gamma_sq"],
-                               c.process_noise, mu_eps=c.epsilon, cov_eps=c.cov_epsilon)
-
         # --- Project and rotate into the stationary frame (Phi^-) ---
+        cos, sin = rotation_angles(p["omega"], t)  # [B|1, N, H, D]
         Q = rotate(self._project_in(self.W_q, Z_q), cos, -sin)
         K = rotate(self._project_in(self.W_k, Z_k), cos, -sin)
         V = self._project_in(self.W_v, Z_v)
         V_agg = rotate(V, cos, -sin) if c.rotate_values else V
 
+        # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
+        chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
+        rows = [self._rows(p, t, Q, K, V, V_agg, cos, sin, i0, min(i0 + chunk, N), causal)
+                for i0 in range(0, N, chunk)]
+        delta = torch.cat([r[0] for r in rows], dim=1)
+        out = self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1))  # [re heads..., im heads...]
+
+        info = self._param_summary(p)
+        if return_metadata:
+            _, A, E, Sigma, R_sq, est = rows[0]
+            info.update(self._metadata(p, A, E, Sigma, R_sq, est, causal))
+        return out, info
+
+    def _rows(self, p, t, Q, K, V, V_agg, cos, sin, i0, i1, causal):
+        """The update of queries i0..i1-1 against all keys: (delta, A, E, Sigma, R_sq, est), rows i0..i1-1."""
+        c = self.config
+        N = K.shape[1]
+
+        # --- Dynamics: decay kernel E and DLE covariance Sigma (all [B|1, nq, N, H]) ---
+        lags = (t[:, i0:i1, None] - t[:, None, :]).abs()[..., None]
+        decay_exp = torch.clamp(-p["mu"] * lags, min=c.min_exponent, max=c.max_exponent)
+        E = torch.exp(decay_exp)
+        Sigma = lag_covariance(p["mu"], lags, decay_exp, p["process_var"], p["eta_sq"], p["gamma_sq"],
+                               c.process_noise, mu_eps=c.epsilon, cov_eps=c.cov_epsilon)
+
         # --- Robust attention weights ---
-        R_sq = residual_norm_sq(Q, K, E, full=c.full_residual_norm)
+        R_sq = residual_norm_sq(Q[:, i0:i1], K, E, full=c.full_residual_norm)
         logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate)
         logits = p["tau"] * logits
         if causal:
-            mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
+            mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
+        cos_q, sin_q, V_q = cos[:, i0:i1], sin[:, i0:i1], V[:, i0:i1]
         if c.prior == "flat":
             A = torch.softmax(logits, dim=2)  # normalize over keys j
 
             # --- Aggregate decayed values, then rotate back (Phi^+) ---
             est = torch.einsum("bijh,bjhdc->bihdc", A * E, V_agg)
             if c.rotate_values:
-                est = rotate(est, cos, sin)
+                est = rotate(est, cos_q, sin_q)
 
             # --- Innovation V_bar - V (or, for checkpoints trained before DKA, the estimate V_bar) ---
-            delta = est - V if c.output == "innovation" else est
+            delta = est - V_q if c.output == "innovation" else est
         else:
             # --- Null slot: the logit of an agreeing lag-0 token plus log c_h (tempered like the logits) ---
             Sigma0 = p["eta_sq"] + p["gamma_sq"] + c.cov_epsilon                    # lag-0 covariance [H]
             null_logit = self.log_c + p["tau"] * robust_logits(
                 torch.zeros_like(Sigma0), Sigma0, p["nu"], c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate)
-            m = torch.maximum(logits.amax(dim=2), null_logit)                          # [B, N, H]
+            m = torch.maximum(logits.amax(dim=2), null_logit)                          # [B, nq, H]
             A_un = torch.exp(logits - m[:, :, None, :])
             null = torch.exp(null_logit - m)
             S = A_un.sum(dim=2)                                                       # evidence, h = 1
             M = torch.einsum("bijh,bjhdc->bihdc", A_un * E, V_agg)
             if c.rotate_values:
-                M = rotate(M, cos, sin)
-            dV = (M - S[..., None, None] * V) / (null + S)[..., None, None]           # proximal innovation
+                M = rotate(M, cos_q, sin_q)
+            dV = (M - S[..., None, None] * V_q) / (null + S)[..., None, None]         # proximal innovation
             A = A_un / (null + S)[:, :, None, :]
-            est = V + dV
+            est = V_q + dV
             delta = dV if c.output == "innovation" else est
-        out = self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1))  # [re heads..., im heads...]
-
-        info = self._param_summary(p)
-        if return_metadata:
-            info.update(self._metadata(p, A, E, Sigma, R_sq, est, causal))
-        return out, info
+        return delta, A, E, Sigma, R_sq, est
 
     # ------------------------------------------------------------------
 
