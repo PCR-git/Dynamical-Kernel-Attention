@@ -266,6 +266,36 @@ def test_qk_norm():
         assert (err < 1e-3) == invariant, (qk, err)                     # 1e-3: the epsilon in the norm
 
 
+def test_mixture_weight():
+    """weight="mixture": a_ij Sigma_n = sigmoid(lambda + beta) with lambda the tempered log-likelihood ratio of the
+    two Gaussian components (computed here from the densities), and w -> sigmoid(beta) for every key as E -> 0."""
+    from dka.kernels import mixture_logits
+    g = torch.Generator().manual_seed(5)
+    Q, K = torch.randn(1, 4, H, D, 2, generator=g, dtype=F64), torch.randn(1, 4, H, D, 2, generator=g, dtype=F64)
+    lags = torch.arange(4, dtype=F64)[None, :, None, None] - torch.arange(4, dtype=F64)[None, None, :, None]
+    mu, v_inf, eta_sq = (torch.tensor(v, dtype=F64) for v in ((0.1, 0.4, 0.9), (2.0, 0.5, 1.5), (0.7, 1.2, 0.3)))
+    beta, tau = torch.tensor((-1.0, 0.3, 2.0), dtype=F64), torch.tensor((0.5, 1.0, 3.0), dtype=F64)
+    E = torch.exp(-mu * lags.abs())
+    Sigma, Sigma_inf = v_inf * (1 - E**2) + eta_sq, v_inf + eta_sq
+    R_sq = (K[:, None] - E[..., None, None] * Q[:, :, None]).pow(2).sum((-1, -2))
+    K_sq = K.pow(2).sum((-1, -2))[:, None]
+    # log N(x; m, S I) up to the shared constant, over the d (complex) coordinates as the -d/2 log S convention
+    log_p1 = -D / 2 * torch.log(Sigma) - R_sq / (2 * Sigma)
+    log_p0 = -D / 2 * torch.log(Sigma_inf) - K_sq / (2 * Sigma_inf)
+    content = (log_p1 - log_p0) - D / 2 * torch.log(Sigma_inf / Sigma)          # the quadratic part of the ratio
+    lam = torch.log(Sigma_inf / Sigma) + tau * 2 * content / D
+    L = mixture_logits(R_sq, K_sq, Sigma, Sigma_inf, D, beta, tau)
+    close(torch.exp(L) * Sigma, torch.sigmoid(lam + beta), 1e-12)
+    R_far = K_sq.expand_as(R_sq)                                               # E = 0: R = K, Sigma_n = Sigma_inf
+    far = mixture_logits(R_far, K_sq, Sigma_inf.expand_as(Sigma), Sigma_inf, D, beta, tau)
+    close(torch.exp(far) * Sigma_inf, torch.sigmoid(beta).expand_as(far), 1e-12)
+    layer = make_layer(weight="mixture", temperature=True)
+    x, t = inputs(N=8)
+    out, info = layer(x, t_measure=t)
+    out.square().mean().backward()
+    assert torch.isfinite(out).all() and layer.beta.grad is not None and "relevance_prior" in info
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

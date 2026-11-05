@@ -88,6 +88,24 @@ def robust_logits(R_sq, Sigma, nu, d, robust_weight=True, dle_bias=True, dle_gat
     return bias - gate * R_sq
 
 
+def mixture_logits(R_sq, K_sq, Sigma, Sigma_inf, d, beta, tau=None):
+    """
+    Logits L = log a = -log Sigma_n + log w of the contamination model (Appendix: attention weights from a
+    contamination model): a key is relevant, N(E Q~_i, Sigma_n), or background, N(0, Sigma_inf), and
+
+        w = P(relevant | K~_j) = sigmoid(lambda + beta),
+        lambda = log(Sigma_inf / Sigma_n) + tau (|K_j|^2 / Sigma_inf - R^2 / Sigma_n) / d,
+
+    the log-likelihood ratio tempered by 2 / d (and tau on its content term). log sigmoid(x) = -softplus(-x), so
+    w <= 1 and a <= 1 / Sigma_n. R_sq, Sigma: [B|1, N, N, H]; K_sq: [B, 1, N, H]; Sigma_inf, beta, tau: [H].
+    """
+    content = K_sq / Sigma_inf - R_sq / Sigma
+    if tau is not None:
+        content = tau * content
+    lam = torch.log(Sigma_inf / Sigma) + content / d
+    return -torch.log(Sigma) - F.softplus(-(lam + beta))
+
+
 def temper_content(logits, Sigma, tau):
     """
     Robust logits L = -log Sigma + content with only the content term multiplied by tau:

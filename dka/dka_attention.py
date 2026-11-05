@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
-from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, inflation_terms, dka_covariance,
+from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, mixture_logits, inflation_terms, dka_covariance,
                       dka_residual_norm_sq, calibrated_evidence)
 
 
@@ -105,6 +105,9 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Inverse temperature on the content term of the logits (not on -log Sigma or the null slot) ---
         self.log_tau = nn.Parameter(torch.zeros(H)) if c.temperature else None
 
+        # --- Contamination model: beta_h = logit of the prior probability of relevance ---
+        self.beta = nn.Parameter(torch.full((H,), c.init_relevance_logit)) if c.weight == "mixture" else None
+
         # --- QK normalization: |Q_i| = |K_j| = s_h ---
         self.log_qk_scale = (nn.Parameter(torch.full((H,), 0.5 * math.log(c.init_qk_scale_sq * D)))
                              if c.qk_norm else None)
@@ -189,9 +192,15 @@ class MultiheadIsotropicDKA(nn.Module):
 
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         R_sq = dka_residual_norm_sq(Q, K, E, h, c_noise)
-        logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
-        if self.log_tau is not None:                                            # content term only (Pearson VII)
-            logits = temper_content(logits, Sigma, torch.exp(self.log_tau))
+        tau = torch.exp(self.log_tau) if self.log_tau is not None else None
+        if c.weight == "mixture":                                               # w = P(relevant | key)
+            Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
+            K_sq = K.pow(2).sum(dim=(-1, -2))[:, None]
+            logits = mixture_logits(R_sq, K_sq, Sigma, Sigma_inf, c.head_dim, self.beta, tau)
+        else:
+            logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
+            if tau is not None:                                                 # content term only (Pearson VII)
+                logits = temper_content(logits, Sigma, tau)
         if causal:
             mask = torch.ones(N, N, dtype=torch.bool, device=Z_q.device).tril()
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
@@ -243,6 +252,8 @@ class MultiheadIsotropicDKA(nn.Module):
             summary["zeta"] = torch.sigmoid(p["theta"])
         if self.log_n_sat is not None:
             summary["saturation"] = torch.exp(self.log_n_sat)
+        if self.beta is not None:
+            summary["relevance_prior"] = torch.sigmoid(self.beta)
         return summary
 
     def _metadata(self, p, A_hat, null, S, S_eff, m, denom, dV):

@@ -36,6 +36,13 @@ class RFAConfig:
 
     # --- Attention weights ---
     robust_weight: bool = True       # Student-t (power-law) weight; False = exponential weight
+    # "robust": w from robust_weight (scale mixture). "mixture": w = P(relevant | key) in a contamination model whose
+    # background is the stationary distribution of a key, N(0, Sigma_inf), Sigma_inf = v_inf + eta^2 (Gaussian
+    # components): w = sigmoid(lambda + beta_h), lambda = log(Sigma_inf / Sigma_n) + (|K|^2 / Sigma_inf - R^2 / Sigma_n) / d,
+    # beta_h = logit pi_h learned. Far keys (E -> 0) get w -> pi_h whatever their content. temperature=True multiplies
+    # the content term (|K|^2 / Sigma_inf - R^2 / Sigma_n) by tau_h.
+    weight: Literal["robust", "mixture"] = "robust"
+    init_relevance_logit: float = 0.0  # initial beta_h (weight="mixture")
 
     # --- Ablations ---
     dle_bias: bool = True            # Additive log-precision bias log(P_dt); False = no bias
@@ -101,6 +108,8 @@ class RFAConfig:
             init_steady_state_var=args.target_ss_process_var,
             init_measurement_var=args.target_measurement_var,
             robust_weight=args.use_robust_weight,
+            weight=getattr(args, "dka_weight", "robust"),
+            init_relevance_logit=getattr(args, "dka_init_relevance_logit", 0.0),
             dle_bias=args.additive_bias_type == 1,
             dle_gate=args.multiplicative_bias_type == 1,
             full_residual_norm=bool(args.use_full_residual_norm),
@@ -151,6 +160,13 @@ class DKAConfig:
 
     # --- Attention weights ---
     robust_weight: bool = True       # Student-t (power-law) weight; False = exponential weight
+    # "robust": w from robust_weight (scale mixture). "mixture": w = P(relevant | key) in a contamination model whose
+    # background is the stationary distribution of a key, N(0, Sigma_inf), Sigma_inf = v_inf + eta^2 (Gaussian
+    # components): w = sigmoid(lambda + beta_h), lambda = log(Sigma_inf / Sigma_n) + (|K|^2 / Sigma_inf - R^2 / Sigma_n) / d,
+    # beta_h = logit pi_h learned. Far keys (E -> 0) get w -> pi_h whatever their content. temperature=True multiplies
+    # the content term (|K|^2 / Sigma_inf - R^2 / Sigma_n) by tau_h.
+    weight: Literal["robust", "mixture"] = "robust"
+    init_relevance_logit: float = 0.0  # initial beta_h (weight="mixture")
 
     # --- Proximal prior on the current estimate (the null slot) ---
     # "tokens": gamma^-2 = c_h I(0) = c_h / eta^2, the prior is worth c_h agreeing tokens at lag 0, so a single
@@ -200,6 +216,8 @@ class DKAConfig:
             raise ValueError(f"saturation must be positive, got {self.saturation}")
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
+        if self.weight == "mixture" and (self.inflation is not None or self.zero_decay_frac > 0):
+            raise ValueError("weight='mixture' needs the stationary prior (no inflation) and mu > 0 in every head")
         if self.inflation is not None and not 0.0 <= self.inflation < 1.0:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
 
@@ -233,6 +251,8 @@ class DKAConfig:
             init_steady_state_var=args.target_ss_process_var,
             init_measurement_var=args.target_measurement_var,
             robust_weight=args.use_robust_weight,
+            weight=getattr(args, "dka_weight", "robust"),
+            init_relevance_logit=getattr(args, "dka_init_relevance_logit", 0.0),
             prior=getattr(args, "dka_prior", "tokens"),
             init_prior_weight=getattr(args, "dka_init_prior_weight", 1.0),
             calibration_length=args.seq_len,
