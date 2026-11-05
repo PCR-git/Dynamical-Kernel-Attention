@@ -7,20 +7,23 @@ content predicts any position. Q queries are written into it, each a triple
 with k from OFFSETS and cue_k a token that names k (one per offset). Only the answers are scored. Because the stream
 is random, the answer can be found only by position: the model must attend to exactly lag k (+1 from the cue).
 
-Fine-tuning: every pretrained model is trained on this task for --steps steps (k uniform over OFFSETS). Evaluation
+Fine-tuning: every pretrained model (or, with --scratch, a fresh one) is trained on this task until convergence
+(k uniform over OFFSETS). Evaluation
 (test-set seeds, before and after fine-tuning): per k, the accuracy, and the share of answers that are the token at a
 neighbouring position k - delta (|delta| = 1, 2, 3..5), i.e. how wide the model's localization is.
 
-usage: python finetune_offset.py <out.txt> <name=run_dir> [...] [--steps 4000] [--lr 1e-3] [--batch-size 16]
-           [--queries 8] [--trials 128]
-(At lr 3e-4 and 2000 steps RoPE learns the task but DKA, RFA and B10 do not; at 1e-3 and 4000 DKA does for small k.)
+usage: python finetune_offset.py <out.txt> <name=run_dir|preset:NAME> [...] [--scratch] [--steps 30000] [--lr 1e-3]
+           [--batch-size 16] [--queries 8] [--trials 128] [--window 1000] [--patience 4]
+Training runs until the mean loss of a window of steps has not improved by 2% for `patience` windows (or reaches
+1e-3), at most --steps; warmup 200 steps, then constant lr. --scratch trains the architecture from random
+initialization (preset:NAME builds a preset that has no checkpoint).
 """
 import math
 import sys
 import time
 import torch
 import eval_eviction as ev
-from dka.training.presets import build_language_model
+from dka.training.presets import build_language_model, make_args
 from dka.utils import seed_everything
 
 SEQ_LEN, N_SYMBOLS = 512, 512
@@ -90,7 +93,10 @@ def evaluate(model, symbols, mark, cues, trials, dev, batch=16):
 
 def main():
     argv = sys.argv[1:]
-    opt = {"--steps": "4000", "--lr": "1e-3", "--batch-size": "16", "--queries": "8", "--trials": "128"}
+    opt = {"--steps": "30000", "--lr": "1e-3", "--batch-size": "16", "--queries": "8", "--trials": "128",
+           "--window": "1000", "--patience": "4"}
+    scratch = "--scratch" in argv
+    argv = [a for a in argv if a != "--scratch"]
     for k in list(opt):
         if k in argv:
             j = argv.index(k)
@@ -99,34 +105,40 @@ def main():
     out_path, runs = argv[0], [a.split("=", 1) for a in argv[1:]]
     steps, lr, bs, nq, trials = (int(opt["--steps"]), float(opt["--lr"]), int(opt["--batch-size"]),
                                  int(opt["--queries"]), int(opt["--trials"]))
+    window, patience = int(opt["--window"]), int(opt["--patience"])
     dev = torch.device("cuda")
     symbols, mark, cues = vocab()
 
     hdr = f"{'model':<12}{'stage':<8}" + "".join(f"{k:>6}" for k in OFFSETS)
-    lines = [f"Offset retrieval accuracy (%) vs k: fine-tuned {steps} steps x {bs} sequences of {SEQ_LEN} tokens, "
-             f"{nq} queries each, lr {lr}; {trials} test queries per k", hdr]
+    lines = [f"Offset retrieval accuracy (%) vs k: {'trained from scratch' if scratch else 'fine-tuned'} until the "
+             f"loss stops improving (< 2% over {patience} windows of {window} steps; at most {steps}), {bs} sequences "
+             f"of {SEQ_LEN} tokens, {nq} queries each, lr {lr}; {trials} test queries per k; steps used in brackets", hdr]
     near = ["", "after fine-tuning: share (%) of answers that are a neighbour at |delta| = 1 / 2 / 3..5", hdr]
     print("\n".join(lines), flush=True)
     for name, path in runs:
-        ckpt = torch.load(ev.latest(path), map_location="cpu", weights_only=False)
-        args = ckpt["args"]
-        args.device = dev
         seed_everything(2025)
-        model = build_language_model(args).to(dev)
-        model.load_state_dict(ckpt["model_state_dict"])
+        if path.startswith("preset:"):                                # architecture only (with --scratch)
+            args = make_args(path[len("preset:"):], device=dev)
+            model = build_language_model(args).to(dev)
+        else:
+            ckpt = torch.load(ev.latest(path), map_location="cpu", weights_only=False)
+            args = ckpt["args"]
+            args.device = dev
+            model = build_language_model(args).to(dev)
+            if not scratch:
+                model.load_state_dict(ckpt["model_state_dict"])
 
         res0 = evaluate(model, symbols, mark, cues, trials, dev)
         lines.append(f"{name:<12}{'before':<8}" + "".join(f"{100 * res0[i][0]:>6.1f}" for i in range(len(OFFSETS))))
         print(lines[-1], flush=True)
 
         opt_ = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
-        warm = max(1, steps // 20)
-        sched = torch.optim.lr_scheduler.LambdaLR(
-            opt_, lambda s: min(1.0, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps)))
+        warm = 200
+        sched = torch.optim.lr_scheduler.LambdaLR(opt_, lambda s: min(1.0, (s + 1) / warm))   # then constant
         g = torch.Generator().manual_seed(2025)
         model.backbone.compile()                                      # fixed training shapes
         model.train()
-        t0, run_loss = time.time(), 0.0
+        t0, run_loss, best, stale = time.time(), 0.0, float("inf"), 0
         for step in range(steps):
             seqs = [make_sequence(symbols, mark, cues, nq, g) for _ in range(bs)]
             x, y = torch.stack([s[0] for s in seqs]).to(dev), torch.stack([s[1] for s in seqs]).to(dev)
@@ -137,14 +149,21 @@ def main():
             opt_.step()
             sched.step()
             run_loss += loss.item()
-            if (step + 1) % 250 == 0:
-                print(f"  {name} step {step + 1}/{steps}  loss {run_loss / 250:.3f}  {time.time() - t0:.0f}s",
-                      flush=True)
+            if (step + 1) % window == 0:                              # converged: no 2% gain in `patience` windows
+                mean = run_loss / window
+                print(f"  {name} step {step + 1}  loss {mean:.4f}  {time.time() - t0:.0f}s", flush=True)
                 run_loss = 0.0
+                if mean < 0.98 * best:
+                    best, stale = mean, 0
+                else:
+                    stale += 1
+                if stale >= patience or mean < 1e-3:
+                    break
         model.backbone._compiled_call_impl = None
 
         res = evaluate(model, symbols, mark, cues, trials, dev)
-        lines.append(f"{name:<12}{'after':<8}" + "".join(f"{100 * res[i][0]:>6.1f}" for i in range(len(OFFSETS))))
+        lines.append(f"{name:<12}{'after':<8}" + "".join(f"{100 * res[i][0]:>6.1f}" for i in range(len(OFFSETS)))
+                     + f"   [{step + 1}]")
         for j, label in ((1, "|delta| = 1"), (2, "|delta| = 2"), (3, "|delta| = 3..5")):
             near.append(f"{name if j == 1 else '':<12}{'':<8}"
                         + "".join(f"{100 * res[i][j]:>6.1f}" for i in range(len(OFFSETS))) + f"   ({label})")
