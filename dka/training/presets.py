@@ -201,6 +201,10 @@ PRESETS = {
                   damping=0.2, rope_base=_BASE_B02, use_softmax_one=True),
     "B10.b05": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True,
                   damping=0.5, rope_base=_BASE_B05, use_softmax_one=True),
+    # B5 and B10 at DKA's best spectrum (b = 1, base 10^4), the controls for D3.b1.r1e4
+    "B5.b1.r1e4": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=1.0),
+    "B10.b1.r1e4": dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=1.0,
+                        use_softmax_one=True),
 }
 
 
