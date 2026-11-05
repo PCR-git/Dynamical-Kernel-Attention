@@ -215,6 +215,8 @@ PRESETS = {
 #   .nonSC  RoPE frequencies in every head, decays kept (frequency and decay uncoupled)
 #   .nonSC.prope  .nonSC with p-RoPE: in heads with horizon > 512, frequencies with period > 512 set to 0
 #   .prope  p-RoPE on the SC spectrum (the slow heads' frequencies all have periods > 512: they become decay-only)
+#   .cap3 / .cap5  decay ceiling mu_h <= c / 512: the fast heads keep their high frequencies over the window
+#           (E(512) = e^-c), slow heads unchanged; RoPE-like localization within the window
 #   .Z      variance inflation from zeta = 0.5 (toward RFA's flat prior)
 #   .qkn    QK normalization (an addition, not a removal)
 #   .mix    contamination-model weight sigmoid(lambda + beta_h) instead of the Student-t (with the learned temperature)
@@ -224,7 +226,8 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "exp": dict(use_robust_weight=False), "noVR": dict(rotate_values=False), "noR": dict(zero_rotations=True),
               "nonSC": dict(use_SC_RoPE=False), "Z": dict(dka_inflation=0.5), "qkn": dict(dka_qk_norm=True),
               "mix": dict(dka_weight="mixture"),
-              "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512)}
+              "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512),
+              "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512)}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     _full = dict(_DKA, **_SC, damping=_b, target_ss_process_var=0.5, dka_temperature=True)
     for _name, _change in _ABLATIONS.items():

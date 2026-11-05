@@ -209,6 +209,9 @@ class DKAConfig:
     # p-RoPE (Barbero et al.): in heads whose horizon 1/mu exceeds this length (the training length), zero the
     # frequencies too low to complete a cycle within it (period 2 pi / omega > length): position-free channels
     prope_length: Optional[float] = None
+    # Decay ceiling: mu_h = min(mu_h, decay_cap). With decay_cap = c / L the fast SC heads keep their high frequencies
+    # alive over the training length L (E(L) = e^-c) instead of dying within a few tokens; slower heads are unchanged
+    decay_cap: Optional[float] = None
     init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
 
     # --- Numerics ---
@@ -270,6 +273,7 @@ class DKAConfig:
             zero_rotations=getattr(args, "zero_rotations", False),
             qk_norm=getattr(args, "dka_qk_norm", False),
             prope_length=getattr(args, "prope_length", None),
+            decay_cap=getattr(args, "dka_decay_cap", None),
             epsilon=args.epsilon,
         )
 

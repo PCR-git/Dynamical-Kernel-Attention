@@ -62,6 +62,8 @@ class MultiheadIsotropicDKA(nn.Module):
         if c.decay_init == "log_linear":
             mu = init_decay_per_head(H, min_decay=0.01, max_decay=0.95, zero_frac=c.zero_decay_frac)
         mu = mu * c.decay_scale
+        if c.decay_cap is not None:
+            mu = mu.clamp(max=c.decay_cap)
         if c.learn_rotations:
             self.omega = nn.Parameter(omega)
         else:

@@ -321,6 +321,14 @@ def test_prope():
     assert torch.equal(layer.omega, torch.where(slow & low, torch.zeros_like(ref.omega), ref.omega))
 
 
+def test_decay_cap():
+    """decay_cap: mu_h = min(mu_h, cap); frequencies and the heads below the cap are unchanged."""
+    ref = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=8, head_dim=32, damping=1.0))
+    cap = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=8, head_dim=32, damping=1.0, decay_cap=3 / 512))
+    assert torch.equal(cap.mu, ref.mu.clamp(max=3 / 512)) and torch.equal(cap.omega, ref.omega)
+    assert (ref.mu > 3 / 512).any() and (ref.mu < 3 / 512).any()
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""
