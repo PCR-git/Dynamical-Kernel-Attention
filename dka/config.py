@@ -214,7 +214,8 @@ class DKAConfig:
     decay_cap: Optional[float] = None
     init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
     # Content residual: "euclidean" = ||K~ - E Q~||^2 (the paper); "polar" = the polar model's directional residual
-    # E^2 |K|^2 2 (1 - cos(Q~, K~)), lag-invariant match, with the key length as confidence (+ log |K|^2 in the logit)
+    # E^2 |K|^2 2 (1 - cos(Q~, K~)): the key against the query direction, lag-invariant match (with qk_norm, |K| = s_h
+    # and the weight stays <= 1 / Sigma_n, so the eviction bound holds)
     residual: Literal["euclidean", "polar"] = "euclidean"
 
     # --- Numerics ---

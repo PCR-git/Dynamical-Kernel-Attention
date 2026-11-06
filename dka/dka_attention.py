@@ -11,6 +11,13 @@ from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, tem
                       dka_residual_norm_sq, polar_residual_norm_sq, calibrated_evidence)
 
 
+@torch.compiler.disable
+def _graph_break(x):
+    """Identity outside the compiled graph. With qk_norm, inductor's fused row-update kernel returns non-finite
+    gradients (eager and aot_eager are finite); splitting the graph at the residual avoids it."""
+    return x
+
+
 class MultiheadIsotropicDKA(nn.Module):
     """
     Multi-head Isotropic Dynamical Kernel Attention (Algorithm 1 of Dynamical_Kernel_Attention.tex).
@@ -226,6 +233,8 @@ class MultiheadIsotropicDKA(nn.Module):
             R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, E, c.epsilon)
         else:
             R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
+        if c.qk_norm:
+            R_sq = _graph_break(R_sq)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)
             Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
@@ -235,8 +244,6 @@ class MultiheadIsotropicDKA(nn.Module):
             logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
             if tau is not None:                                                 # content term only (Pearson VII)
                 logits = temper_content(logits, Sigma, tau)
-            if c.residual == "polar":              # key length as confidence: kappa ~ |K|^2, per coordinate
-                logits = logits + torch.log(K.pow(2).mean(dim=(-1, -2)) + c.epsilon)[:, None]
         if causal:
             mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
