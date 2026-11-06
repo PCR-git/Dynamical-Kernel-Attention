@@ -213,6 +213,9 @@ class DKAConfig:
     # alive over the training length L (E(L) = e^-c) instead of dying within a few tokens; slower heads are unchanged
     decay_cap: Optional[float] = None
     init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
+    # Content residual: "euclidean" = ||K~ - E Q~||^2 (the paper); "polar" = the polar model's directional residual
+    # E^2 |K|^2 2 (1 - cos(Q~, K~)), lag-invariant match, with the key length as confidence (+ log |K|^2 in the logit)
+    residual: Literal["euclidean", "polar"] = "euclidean"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -226,6 +229,8 @@ class DKAConfig:
             raise ValueError("weight='mixture' needs the stationary prior (no inflation) and mu > 0 in every head")
         if self.inflation is not None and not 0.0 <= self.inflation < 1.0:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
+        if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
+            raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
 
     @classmethod
     def from_args(cls, args, d_model, n_heads, head_dim):
@@ -274,6 +279,7 @@ class DKAConfig:
             qk_norm=getattr(args, "dka_qk_norm", False),
             prope_length=getattr(args, "prope_length", None),
             decay_cap=getattr(args, "dka_decay_cap", None),
+            residual=getattr(args, "dka_residual", "euclidean"),
             epsilon=args.epsilon,
         )
 

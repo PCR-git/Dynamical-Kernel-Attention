@@ -8,7 +8,7 @@ from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
 from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, mixture_logits, inflation_terms, dka_covariance,
-                      dka_residual_norm_sq, calibrated_evidence)
+                      dka_residual_norm_sq, polar_residual_norm_sq, calibrated_evidence)
 
 
 class MultiheadIsotropicDKA(nn.Module):
@@ -222,7 +222,10 @@ class MultiheadIsotropicDKA(nn.Module):
         Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
 
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
-        R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
+        if c.residual == "polar":                                                # direction vs direction
+            R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, E, c.epsilon)
+        else:
+            R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)
             Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
@@ -232,6 +235,8 @@ class MultiheadIsotropicDKA(nn.Module):
             logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
             if tau is not None:                                                 # content term only (Pearson VII)
                 logits = temper_content(logits, Sigma, tau)
+            if c.residual == "polar":              # key length as confidence: kappa ~ |K|^2, per coordinate
+                logits = logits + torch.log(K.pow(2).mean(dim=(-1, -2)) + c.epsilon)[:, None]
         if causal:
             mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))

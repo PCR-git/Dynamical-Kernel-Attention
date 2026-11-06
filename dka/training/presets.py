@@ -220,6 +220,7 @@ PRESETS = {
 #   .Z      variance inflation from zeta = 0.5 (toward RFA's flat prior)
 #   .qkn    QK normalization (an addition, not a removal)
 #   .mix    contamination-model weight sigmoid(lambda + beta_h) instead of the Student-t (with the learned temperature)
+#   .polar  polar residual: key direction vs query direction (lag-invariant match), decay only in the precision
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
 # and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
@@ -227,7 +228,8 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "nonSC": dict(use_SC_RoPE=False), "Z": dict(dka_inflation=0.5), "qkn": dict(dka_qk_norm=True),
               "mix": dict(dka_weight="mixture"),
               "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512),
-              "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512)}
+              "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512),
+              "polar": dict(dka_residual="polar")}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     _full = dict(_DKA, **_SC, damping=_b, target_ss_process_var=0.5, dka_temperature=True)
     for _name, _change in _ABLATIONS.items():

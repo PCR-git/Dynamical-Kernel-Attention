@@ -329,6 +329,29 @@ def test_decay_cap():
     assert (ref.mu > 3 / 512).any() and (ref.mu < 3 / 512).any()
 
 
+def test_polar_residual():
+    """residual='polar': E^2 |K|^2 2 (1 - cos); with E = 1 and |Q| = |K| it is ||K - Q||^2, an aligned key matches
+    exactly at every lag (the Euclidean residual does not), and the layer runs with finite gradients."""
+    from dka.kernels import polar_residual_norm_sq, dka_residual_norm_sq
+    g = torch.Generator().manual_seed(0)
+    Q = torch.randn(1, 3, 2, D, 2, generator=g, dtype=F64)
+    K = torch.randn(1, 5, 2, D, 2, generator=g, dtype=F64)
+    K = K / K.pow(2).sum((-1, -2), keepdim=True).sqrt() * Q[:, :1].pow(2).sum((-1, -2), keepdim=True).sqrt()
+    Q = Q / Q.pow(2).sum((-1, -2), keepdim=True).sqrt() * K[:, :1].pow(2).sum((-1, -2), keepdim=True).sqrt()
+    ones = torch.ones(1, 3, 5, 2, dtype=F64)
+    close(polar_residual_norm_sq(Q, K, ones, eps=0.0), dka_residual_norm_sq(Q, K, ones, ones), 1e-10)
+    K_al = 3.0 * Q[:, :1].expand(1, 5, 2, D, 2)                                     # aligned, 3x longer
+    for e in (1.0, 0.6, 0.1):
+        E = torch.full((1, 1, 5, 2), e, dtype=F64)
+        close(polar_residual_norm_sq(Q[:, :1], K_al, E, eps=0.0), 0.0, 1e-9)
+    assert dka_residual_norm_sq(Q[:, :1], K_al, E, E * E).min() > 0.1             # Euclidean: best match K = E Q
+    layer = make_layer(residual="polar")
+    x, t = inputs(N=8)
+    out, _ = layer(x, t_measure=t)
+    out.square().mean().backward()
+    assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all() for p in layer.parameters())
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

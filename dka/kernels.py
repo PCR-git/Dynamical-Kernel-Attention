@@ -191,6 +191,26 @@ def dka_residual_norm_sq(Q_rot, K_rot, E, h, c=1.0):
     return (c * k_sq + h * q_sq - cross).clamp_min(0)
 
 
+def polar_residual_norm_sq(Q_rot, K_rot, E, eps=1e-5):
+    """
+    Directional residual of the polar model with stochastic dynamics (radial-tangential filter, Stochastic
+    Dynamics appendix): the decay scales a transported key along its direction but leaves the direction unchanged,
+    so the key's direction is compared with the query's and the lag enters only through the precision,
+
+        kappa_ij ||u_q,i - u_k,j||^2 Sigma_n = E^2 |K_j|^2 * 2 (1 - c_ij),     c_ij = <Q~_i, K~_j> / (|Q_i| |K_j|),
+
+    i.e. ||E K~_j - E |K_j| u_q,i||^2: the key against the query direction at the key's own length. A key aligned
+    with the query matches exactly at every lag, unlike ||K~_j - E Q~_i||^2, whose best match K = E Q moves with
+    the lag. Divided by Sigma_n it is the directional Mahalanobis distance d_ij^2.
+
+    Q_rot, K_rot: [B, N, H, D, 2]; E: [B|1, Nq, N, H]. Returns [B, Nq, N, H], clamped at 0.
+    """
+    dot = torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    q_norm = Q_rot.pow(2).sum(dim=(-1, -2)).add(eps).sqrt()[:, :, None, :]
+    k_sq = K_rot.pow(2).sum(dim=(-1, -2))[:, None, :, :]
+    return (2 * E * E * (k_sq - k_sq.add(eps).sqrt() * dot / q_norm)).clamp_min(0)
+
+
 def calibrated_evidence(mu, sigma_sq, eta_sq, length, theta=None):
     """
     S_bar: the evidence S_i a head gathers with unit robust weights when every token of a context of
