@@ -244,6 +244,8 @@ class MultiheadIsotropicDKA(nn.Module):
             logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
             if tau is not None:                                                 # content term only (Pearson VII)
                 logits = temper_content(logits, Sigma, tau)
+        if c.residual == "polar":            # kappa = E^2 |K|^2 / Sigma_n: key length as confidence (E^2 enters via h)
+            logits = logits + torch.log(K.pow(2).mean(dim=(-1, -2)) + c.epsilon)[:, None]
         if causal:
             mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
@@ -260,7 +262,9 @@ class MultiheadIsotropicDKA(nn.Module):
             S_eff = S / (1 + S * torch.exp(m - p["log_saturation"]))
 
         # --- Aggregate decayed values, counter-rotate (Phi^+), proximal innovation ---
-        A_hat = A * E
+        # Euclidean: the measurement E U v_j of h x_i is attenuated, so each key's estimate is U v_j / E (weight A E^2).
+        # Polar: the transported direction is unbiased for u_i, so each key's estimate is U v_j itself (weight A E^2).
+        A_hat = A * (h if c.residual == "polar" else E)
         M = torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot)
         if c.rotate_values:
             M = rotate(M, cos[:, i0:i1], sin[:, i0:i1])

@@ -220,7 +220,8 @@ PRESETS = {
 #   .Z      variance inflation from zeta = 0.5 (toward RFA's flat prior)
 #   .qkn    QK normalization (an addition, not a removal)
 #   .mix    contamination-model weight sigmoid(lambda + beta_h) instead of the Student-t (with the learned temperature)
-#   .polar  polar residual: key direction vs query direction (lag-invariant match), decay only in the precision
+#   .polar  polar geometry: key direction vs query direction (lag-invariant match), precision E^2 |K|^2 / Sigma_n,
+#           each value aggregated undivided by E (the direction is unbiased; DKA divides out the attenuation)
 #   .polar.qkn  .polar with QK normalization (the spherical geometry the polar model assumes; keeps the bound)
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
 # and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.

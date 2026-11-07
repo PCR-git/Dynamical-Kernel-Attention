@@ -332,7 +332,7 @@ def test_decay_cap():
 def test_polar_residual():
     """residual='polar': E^2 |K|^2 2 (1 - cos); with E = 1 and |Q| = |K| it is ||K - Q||^2, an aligned key matches
     exactly at every lag (the Euclidean residual does not), and the layer runs with finite gradients, with and
-    without qk_norm."""
+    without qk_norm, aggregating each value undivided by E (weight A E^2 on U v_j), so the update is convex."""
     from dka.kernels import polar_residual_norm_sq, dka_residual_norm_sq
     g = torch.Generator().manual_seed(0)
     Q = torch.randn(1, 3, 2, D, 2, generator=g, dtype=F64)
@@ -353,6 +353,12 @@ def test_polar_residual():
         out.square().mean().backward()
         assert torch.isfinite(out).all()
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in layer.parameters())
+        # each key's estimate is its value, undivided by E: without the null slot the weights sum to one at every lag
+        # (the Euclidean estimator's sum A E / sum A E^2 exceeds one here)
+        with torch.no_grad():
+            layer.log_c.fill_(-40.0)
+        _, meta = layer(x, t_measure=t * 50, return_metadata=True)
+        close(meta["attn_mat"].sum(2), 1.0, 1e-10)
 
 
 def test_rfa_null_slot():
