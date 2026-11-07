@@ -164,7 +164,7 @@ def keep_mask(X, key_dim, head_dim, log_w=None):
 def wrap_logits(fn):                     # DKA logits [B, Nq, Nk, H]
     def g(*a, **kw):
         L = fn(*a, **kw)
-        if CUT["policy"] is None:
+        if CUT["policy"] is None or L.dim() < 4:     # RFA's null logit (prior="tokens") is not a key matrix
             return L
         log_w = None
         if CUT["policy"] in ("h2o", "profile"):   # numerator shares: softmax(L - mu dt) over the keys
