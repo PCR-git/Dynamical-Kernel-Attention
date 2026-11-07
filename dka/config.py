@@ -217,6 +217,12 @@ class DKAConfig:
     # E^2 |K|^2 2 (1 - cos(Q~, K~)): the key against the query direction, lag-invariant match (with qk_norm, |K| = s_h
     # and the weight stays <= 1 / Sigma_n, so the eviction bound holds)
     residual: Literal["euclidean", "polar"] = "euclidean"
+    # Flat precision (as RFA's flat-prior ablation): Sigma_n = eta^2 at every lag, no accumulated forcing, so the
+    # -log Sigma_n bias is constant and the residual is scaled the same at every lag; decay still enters through E
+    flat_precision: bool = False
+    # Zero decay: mu = 0 in every head (rotation only, E = h = 1), keeping the forcing sigma^2 = 2 mu_h v_inf of each
+    # head's coupled decay, so Sigma_n = eta^2 + sigma^2 dt grows linearly with lag (a random walk, not stationary)
+    zero_decay: bool = False
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -232,6 +238,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.flat_precision and (self.inflation is not None or self.weight != "robust"):
+            raise ValueError("flat_precision needs no inflation and weight='robust'")
 
     @classmethod
     def from_args(cls, args, d_model, n_heads, head_dim):
@@ -281,6 +289,8 @@ class DKAConfig:
             prope_length=getattr(args, "prope_length", None),
             decay_cap=getattr(args, "dka_decay_cap", None),
             residual=getattr(args, "dka_residual", "euclidean"),
+            flat_precision=getattr(args, "dka_flat_precision", False),
+            zero_decay=getattr(args, "dka_zero_decay", False),
             epsilon=args.epsilon,
         )
 

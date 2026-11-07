@@ -361,6 +361,23 @@ def test_polar_residual():
         close(meta["attn_mat"].sum(2), 1.0, 1e-10)
 
 
+def test_flat_precision_and_zero_decay():
+    """flat_precision: Sigma_n = eta^2 at every lag, so the forcing sigma^2 has no effect on the output; zero_decay:
+    mu = 0 in every head with each head's forcing initialized from its coupled decay (sigma^2 = 2 mu_h v_inf)."""
+    x, t = inputs(N=8)
+    flat = make_layer(flat_precision=True)
+    out, _ = flat(x, t_measure=t * 5)
+    with torch.no_grad():
+        flat.sigma_raw.add_(3.0)
+    close(flat(x, t_measure=t * 5)[0], out, 1e-12)
+    out.square().mean().backward()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in flat.parameters())
+    zd = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, damping=1.0, zero_decay=True))
+    ref = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=D, damping=1.0))
+    assert (zd.mu == 0).all() and (ref.mu > 0).all()
+    close(zd.sde_params()["sigma_sq"], ref.sde_params()["sigma_sq"], 1e-6)
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

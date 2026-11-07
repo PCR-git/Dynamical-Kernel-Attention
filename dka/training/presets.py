@@ -212,6 +212,7 @@ PRESETS = {
 #   .N      no null slot                       .est    estimate output W_o (V + dV)
 #   .noT    no learned temperature (tau = 1)   .exp    exponential weight instead of the Student-t
 #   .noVR   no value rotation                  .noR    no rotations (decay only)
+#   .flat   flat precision Sigma_n = eta^2     .mu0    mu = 0 (rotation only; forcing kept: Sigma_n = eta^2 + sigma^2 dt)
 #   .nonSC  RoPE frequencies in every head, decays kept (frequency and decay uncoupled)
 #   .nonSC.prope  .nonSC with p-RoPE: in heads with horizon > 512, frequencies with period > 512 set to 0
 #   .prope  p-RoPE on the SC spectrum (the slow heads' frequencies all have periods > 512: they become decay-only)
@@ -228,7 +229,7 @@ PRESETS = {
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
               "exp": dict(use_robust_weight=False), "noVR": dict(rotate_values=False), "noR": dict(zero_rotations=True),
               "nonSC": dict(use_SC_RoPE=False), "Z": dict(dka_inflation=0.5), "qkn": dict(dka_qk_norm=True),
-              "mix": dict(dka_weight="mixture"),
+              "mix": dict(dka_weight="mixture"), "flat": dict(dka_flat_precision=True), "mu0": dict(dka_zero_decay=True),
               "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512),
               "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512),
               "polar": dict(dka_residual="polar"), "polar.qkn": dict(dka_residual="polar", dka_qk_norm=True)}
@@ -238,6 +239,8 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
         PRESETS.setdefault(f"D3.{_tag}.r1e4.{_name}", dict(_full, **_change))
     PRESETS.setdefault(f"M3.{_tag}.r1e4.null", dict(_SC, damping=_b, zero_frac=0.0, target_ss_process_var=0.5,
                                                     rfa_output="innovation", rfa_prior="tokens"))
+    PRESETS.setdefault(f"M3.{_tag}.r1e4.I", dict(_SC, damping=_b, zero_frac=0.0, target_ss_process_var=0.5,
+                                                 rfa_output="innovation"))           # RFA in innovation form
     _b5 = dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=_b)
     PRESETS.setdefault(f"B5.{_tag}.r1e4", _b5)
     PRESETS.setdefault(f"B10.{_tag}.r1e4", dict(_b5, use_softmax_one=True))

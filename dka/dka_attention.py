@@ -13,7 +13,7 @@ from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, tem
 
 @torch.compiler.disable
 def _graph_break(x):
-    """Identity outside the compiled graph. With qk_norm, inductor's fused row-update kernel returns non-finite
+    """Identity outside the compiled graph. With qk_norm or flat_precision, inductor's fused row-update kernel returns non-finite
     gradients (eager and aot_eager are finite); splitting the graph at the residual avoids it."""
     return x
 
@@ -71,6 +71,9 @@ class MultiheadIsotropicDKA(nn.Module):
         mu = mu * c.decay_scale
         if c.decay_cap is not None:
             mu = mu.clamp(max=c.decay_cap)
+        mu_noise = mu                                # sets the initial forcing: sigma^2 = 2 mu v_inf
+        if c.zero_decay:                             # mu = 0, with each head's forcing as at its coupled decay
+            mu = torch.zeros_like(mu)
         if c.learn_rotations:
             self.omega = nn.Parameter(omega)
         else:
@@ -79,7 +82,7 @@ class MultiheadIsotropicDKA(nn.Module):
 
         # --- Noise: equal rho = v_inf / eta^2 across heads at initialization ---
         if c.process_noise == "variance":
-            sigma_init = inv_softplus(torch.where(mu > 0, 2 * mu * c.init_steady_state_var,
+            sigma_init = inv_softplus(torch.where(mu_noise > 0, 2 * mu_noise * c.init_steady_state_var,
                                                   torch.full_like(mu, c.init_steady_state_var)))
         else:
             sigma_init = inv_softplus(torch.full((H,), c.init_steady_state_var))
@@ -226,14 +229,17 @@ class MultiheadIsotropicDKA(nn.Module):
         E = torch.exp(-p["mu"] * lags)
         log_h, c_noise = inflation_terms(p["theta"], p["mu"], lags)
         h = E * E if p["theta"] is None else torch.exp(log_h)
-        Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
+        if c.flat_precision:                                                    # Sigma_n = eta^2 at every lag
+            Sigma = p["eta_sq"].expand_as(E)
+        else:
+            Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
 
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         if c.residual == "polar":                                                # direction vs direction
             R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, E, c.epsilon)
         else:
             R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
-        if c.qk_norm:
+        if c.qk_norm or c.flat_precision:
             R_sq = _graph_break(R_sq)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)
