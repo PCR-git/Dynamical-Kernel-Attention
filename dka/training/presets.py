@@ -224,6 +224,9 @@ PRESETS = {
 #   .polar  polar geometry: key direction vs query direction (lag-invariant match), precision E^2 |K|^2 / Sigma_n,
 #           each value aggregated undivided by E (the direction is unbiased; DKA divides out the attenuation)
 #   .polar.qkn  .polar with QK normalization (the spherical geometry the polar model assumes; keeps the bound)
+#   .polar.const / .polar.mag  polar appendix with the test and the information separated (residual polar_obs):
+#           d^2 = 2 kappa^obs (1 - cos), kappa^obs = m^2 / Sigma_{n,t} (no E), information E^2 kappa^obs, null
+#           c_h kappa_ii, sigma_t^2 = eta^2 + rho^2 m^2; forcing v_inf (1 - E^2) (.const) or m^2 (1 - E^2) / 2d (.mag)
 #   .dot    dot-product content: .exp with the residual's |K|^2 and E^2 |Q|^2 terms dropped, logit
 #           -log Sigma_n + 2 E Re<Q~, K~> / (nu Sigma_n); everything else as DKA (compare with .exp)
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
@@ -235,7 +238,9 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "nonSC.prope": dict(use_SC_RoPE=False, prope_length=512), "prope": dict(prope_length=512),
               "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512),
               "polar": dict(dka_residual="polar"), "polar.qkn": dict(dka_residual="polar", dka_qk_norm=True),
-              "dot": dict(use_robust_weight=False, dka_residual="dot")}
+              "dot": dict(use_robust_weight=False, dka_residual="dot"),
+              "polar.const": dict(dka_residual="polar_obs", dka_polar_forcing="constant"),
+              "polar.mag": dict(dka_residual="polar_obs", dka_polar_forcing="magnitude")}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     _full = dict(_DKA, **_SC, damping=_b, target_ss_process_var=0.5, dka_temperature=True)
     for _name, _change in _ABLATIONS.items():

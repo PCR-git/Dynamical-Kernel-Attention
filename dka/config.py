@@ -217,7 +217,12 @@ class DKAConfig:
     # E^2 |K|^2 2 (1 - cos(Q~, K~)): the key against the query direction, lag-invariant match (with qk_norm, |K| = s_h
     # and the weight stays <= 1 / Sigma_n, so the eviction bound holds); "dot" = the cross term -2 E Re<Q~, K~> alone
     # (the |K|^2 and E^2 |Q|^2 terms dropped: dot-product content, needs the exponential weight)
-    residual: Literal["euclidean", "polar", "dot"] = "euclidean"
+    # "polar_obs" = the polar appendix with the test and the information separated: d^2 = 2 kappa^obs (1 - cos), with
+    # kappa^obs = m_j^2 / Sigma_{n,t} in the key's own units (no E), information E^2 kappa^obs, null c_h kappa_ii
+    residual: Literal["euclidean", "polar", "dot", "polar_obs"] = "euclidean"
+    # polar_obs forcing in Sigma_{n,t}: "constant" v_inf (1 - E^2) as in DKA, or "magnitude" m_j^2 (1 - E^2) / 2d
+    polar_forcing: Literal["constant", "magnitude"] = "constant"
+    init_rho_sq: float = 1e-3        # polar_obs: initial rho^2 (measurement noise rho^2 m^2 next to eta^2)
     # Flat precision (as RFA's flat-prior ablation): Sigma_n = eta^2 at every lag, no accumulated forcing, so the
     # -log Sigma_n bias is constant and the residual is scaled the same at every lag; decay still enters through E
     flat_precision: bool = False
@@ -239,6 +244,9 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.residual == "polar_obs" and (self.inflation is not None or self.weight != "robust"
+                                             or self.prior not in ("tokens", "none")):
+            raise ValueError("residual='polar_obs' needs no inflation, weight='robust' and prior 'tokens' or 'none'")
         if self.residual == "dot" and (self.inflation is not None or self.weight != "robust" or self.robust_weight):
             raise ValueError("residual='dot' needs no inflation and the exponential weight (robust_weight=False)")
         if self.flat_precision and (self.inflation is not None or self.weight != "robust"):
@@ -292,6 +300,7 @@ class DKAConfig:
             prope_length=getattr(args, "prope_length", None),
             decay_cap=getattr(args, "dka_decay_cap", None),
             residual=getattr(args, "dka_residual", "euclidean"),
+            polar_forcing=getattr(args, "dka_polar_forcing", "constant"),
             flat_precision=getattr(args, "dka_flat_precision", False),
             zero_decay=getattr(args, "dka_zero_decay", False),
             epsilon=args.epsilon,

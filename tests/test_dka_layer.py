@@ -378,6 +378,43 @@ def test_flat_precision_and_zero_decay():
     close(zd.sde_params()["sigma_sq"], ref.sde_params()["sigma_sq"], 1e-6)
 
 
+def test_polar_obs():
+    """residual='polar_obs': each key's weight is E^2 kappa^obs w(2 kappa^obs (1 - cos)) with kappa^obs = m_j^2 /
+    Sigma_{n,t}, Sigma_{n,t} = eta^2 + rho^2 m_j^2 + forcing (v_inf (1 - E^2) or m_j^2 (1 - E^2) / 2d), the null
+    slot c_h m_i^2 / (eta^2 + rho^2 m_i^2); checked against the formula from the layer's own Q and K, for both
+    forcings, with finite gradients; without the null slot the weights sum to one (each value undivided by E)."""
+    x, t = inputs(N=6)
+    for forcing in ("constant", "magnitude"):
+        layer = make_layer(residual="polar_obs", polar_forcing=forcing, epsilon=1e-14)   # eps would blur the check
+        with torch.no_grad():
+            layer.rho_raw.copy_(torch.tensor([-3.0, -1.0, 0.5], dtype=F64))
+        out, meta = layer(x, t_measure=t, return_metadata=True)
+        out.square().mean().backward()
+        assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all()
+                                                 for p in layer.parameters())
+        with torch.no_grad():                                       # the formula, from the layer's Q and K
+            p = layer.sde_params()
+            cos, sin = rotation_angles(p["omega"], t)
+            Q = rotate(layer._project_in(layer.W_q, x), cos, -sin)
+            K = rotate(layer._project_in(layer.W_k, x), cos, -sin)
+            q_sq, k_sq = Q.pow(2).sum((-1, -2)), K.pow(2).sum((-1, -2))           # [B, N, H]
+            cosine = torch.einsum("bihdc,bjhdc->bijh", Q, K) / (q_sq[:, :, None] * k_sq[:, None]).sqrt()
+            lags = (t[:, :, None] - t[:, None, :]).abs()[..., None]
+            E2 = torch.exp(-2 * p["mu"] * lags)
+            m2 = k_sq[:, None]
+            force = (m2 * (1 - E2) / (2 * D) if forcing == "magnitude"
+                     else p["sigma_sq"] / (2 * p["mu"]) * (1 - E2))
+            kobs = m2 / (p["eta_sq"] + p["rho_sq"] * m2 + force)
+            tau = torch.exp(layer.log_tau) if layer.log_tau is not None else 1.0
+            w = (1 + 2 * kobs * (1 - cosine) / p["nu"]).pow(-tau * (p["nu"] + D) / D)
+            weight = (E2 * kobs * w).masked_fill(~torch.ones(6, 6, dtype=torch.bool).tril()[None, :, :, None], 0)
+            null = torch.exp(layer.log_c) * k_sq / (p["eta_sq"] + p["rho_sq"] * k_sq)   # kappa_ii uses m_i = |K_i|
+            close(meta["attn_mat"], weight / (null[:, :, None] + weight.sum(2, keepdim=True)), 1e-10)
+            layer.log_c.fill_(-40.0)
+        _, meta = layer(x, t_measure=t * 50, return_metadata=True)
+        close(meta["attn_mat"].sum(2), 1.0, 1e-10)
+
+
 def test_dot_residual():
     """residual='dot': the exponential-weight logits differ from the Euclidean ones by the key-only |K|^2 and
     query-only E^2 |Q|^2 terms; the layer needs the exponential weight."""

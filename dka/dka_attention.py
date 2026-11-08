@@ -8,7 +8,7 @@ from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
 from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, mixture_logits, inflation_terms, dka_covariance,
-                      dka_residual_norm_sq, polar_residual_norm_sq, dot_residual, calibrated_evidence)
+                      dka_residual_norm_sq, polar_residual_norm_sq, dot_residual, calibrated_evidence, forcing_variance)
 
 
 @torch.compiler.disable
@@ -89,6 +89,9 @@ class MultiheadIsotropicDKA(nn.Module):
         self.sigma_raw = nn.Parameter(sigma_init)
         self.eta_raw = nn.Parameter(inv_softplus(torch.full((H,), c.init_measurement_var)))
         self.nu_raw = nn.Parameter(torch.full((H,), c.init_nu_over_d))
+        # rho^2: measurement noise in proportion to the magnitude (polar_obs), sigma_t^2 = eta^2 + rho^2 m^2
+        self.rho_raw = (nn.Parameter(inv_softplus(torch.full((H,), c.init_rho_sq)))
+                        if c.residual == "polar_obs" else None)
 
         # --- Proximal prior ---
         if c.prior in ("tokens", "window"):
@@ -160,7 +163,8 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             log_prior_precision = -torch.log(F.softplus(self.gamma_raw) + c.epsilon)
         log_saturation = None if self.log_n_sat is None else self.log_n_sat - torch.log(eta_sq)
-        return dict(mu=mu, omega=omega, sigma_sq=sigma_sq, eta_sq=eta_sq, nu=nu, theta=self.theta,
+        rho_sq = None if self.rho_raw is None else F.softplus(self.rho_raw)
+        return dict(mu=mu, omega=omega, sigma_sq=sigma_sq, eta_sq=eta_sq, nu=nu, theta=self.theta, rho_sq=rho_sq,
                     log_prior_precision=log_prior_precision, log_saturation=log_saturation)
 
     def _project_in(self, W, Z):
@@ -234,14 +238,24 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
 
+        if c.residual == "polar_obs":            # tangential noise Sigma_{n,t} = eta^2 + rho^2 m_j^2 + forcing
+            k_sq = K.pow(2).sum(dim=(-1, -2))[:, None]                          # m_j^2 [B, 1, N, H]
+            if c.polar_forcing == "magnitude":                                  # m_j^2 (1 - E^2) / 2d
+                forcing = k_sq * (1 - E * E) / (2 * c.head_dim)
+            else:                                                               # v_inf (1 - E^2)
+                forcing = forcing_variance(p["mu"], p["sigma_sq"], lags)
+            Sigma = p["eta_sq"] + p["rho_sq"] * k_sq + forcing
+
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         if c.residual == "polar":                                                # direction vs direction
             R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, E, c.epsilon)
+        elif c.residual == "polar_obs":          # 2 m_j^2 (1 - c): the test in the key's own units, no E
+            R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, 1.0, c.epsilon)
         elif c.residual == "dot":                                                # cross term only
             R_sq = dot_residual(Q[:, i0:i1], K, E)
         else:
             R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
-        if c.qk_norm or c.flat_precision or c.residual == "dot":
+        if c.qk_norm or c.flat_precision or c.residual in ("dot", "polar_obs"):
             R_sq = _graph_break(R_sq)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)
@@ -254,12 +268,17 @@ class MultiheadIsotropicDKA(nn.Module):
                 logits = temper_content(logits, Sigma, tau)
         if c.residual == "polar":            # kappa = E^2 |K|^2 / Sigma_n: key length as confidence (E^2 enters via h)
             logits = logits + torch.log(K.pow(2).mean(dim=(-1, -2)) + c.epsilon)[:, None]
+        elif c.residual == "polar_obs":      # log kappa^obs + log w, kappa^obs = m_j^2 / Sigma_{n,t} (E^2 enters via h)
+            logits = logits + torch.log(k_sq + c.epsilon)
         if causal:
             mask = torch.arange(N, device=K.device)[None, :] <= torch.arange(i0, i1, device=K.device)[:, None]
             logits = logits.masked_fill(~mask[None, :, :, None], float("-inf"))
 
         # --- Stabilized weights: subtract the max over the keys and the null slot (logit -log gamma^2) ---
         null_logit = p["log_prior_precision"]                                  # [H]
+        if c.residual == "polar_obs" and c.prior == "tokens":   # gamma_i^-2 = c_h kappa_ii, the token's own precision
+            kq = K[:, i0:i1].pow(2).sum(dim=(-1, -2))                           # m_i^2 [B, nq, H]
+            null_logit = self.log_c + torch.log(kq + c.epsilon) - torch.log(p["eta_sq"] + p["rho_sq"] * kq)
         m = torch.maximum(logits.amax(dim=2), null_logit)                       # [B, nq, H]
         A = torch.exp(logits - m[:, :, None, :])
         null = torch.exp(null_logit - m)                                        # gamma^-2 e^{-m}
@@ -272,7 +291,7 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Aggregate decayed values, counter-rotate (Phi^+), proximal innovation ---
         # Euclidean: the measurement E U v_j of h x_i is attenuated, so each key's estimate is U v_j / E (weight A E^2).
         # Polar: the transported direction is unbiased for u_i, so each key's estimate is U v_j itself (weight A E^2).
-        A_hat = A * (h if c.residual == "polar" else E)
+        A_hat = A * (h if c.residual in ("polar", "polar_obs") else E)
         M = torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot)
         if c.rotate_values:
             M = rotate(M, cos[:, i0:i1], sin[:, i0:i1])
@@ -297,6 +316,8 @@ class MultiheadIsotropicDKA(nn.Module):
             summary["prior_weight"] = torch.exp(self.log_c)
         if p["theta"] is not None:
             summary["zeta"] = torch.sigmoid(p["theta"])
+        if p["rho_sq"] is not None:
+            summary["rho_sq"] = p["rho_sq"]
         if self.log_n_sat is not None:
             summary["saturation"] = torch.exp(self.log_n_sat)
         if self.beta is not None:
