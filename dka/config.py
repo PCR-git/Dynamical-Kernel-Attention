@@ -215,8 +215,9 @@ class DKAConfig:
     init_qk_scale_sq: float = 4.0    # initial s_h^2 / head_dim
     # Content residual: "euclidean" = ||K~ - E Q~||^2 (the paper); "polar" = the polar model's directional residual
     # E^2 |K|^2 2 (1 - cos(Q~, K~)): the key against the query direction, lag-invariant match (with qk_norm, |K| = s_h
-    # and the weight stays <= 1 / Sigma_n, so the eviction bound holds)
-    residual: Literal["euclidean", "polar"] = "euclidean"
+    # and the weight stays <= 1 / Sigma_n, so the eviction bound holds); "dot" = the cross term -2 E Re<Q~, K~> alone
+    # (the |K|^2 and E^2 |Q|^2 terms dropped: dot-product content, needs the exponential weight)
+    residual: Literal["euclidean", "polar", "dot"] = "euclidean"
     # Flat precision (as RFA's flat-prior ablation): Sigma_n = eta^2 at every lag, no accumulated forcing, so the
     # -log Sigma_n bias is constant and the residual is scaled the same at every lag; decay still enters through E
     flat_precision: bool = False
@@ -238,6 +239,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.residual == "dot" and (self.inflation is not None or self.weight != "robust" or self.robust_weight):
+            raise ValueError("residual='dot' needs no inflation and the exponential weight (robust_weight=False)")
         if self.flat_precision and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("flat_precision needs no inflation and weight='robust'")
 

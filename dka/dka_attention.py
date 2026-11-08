@@ -8,7 +8,7 @@ from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
 from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, mixture_logits, inflation_terms, dka_covariance,
-                      dka_residual_norm_sq, polar_residual_norm_sq, calibrated_evidence)
+                      dka_residual_norm_sq, polar_residual_norm_sq, dot_residual, calibrated_evidence)
 
 
 @torch.compiler.disable
@@ -237,9 +237,11 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Robust logits L = -log Sigma_n - kappa log(1 + d^2 / nu) ---
         if c.residual == "polar":                                                # direction vs direction
             R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, E, c.epsilon)
+        elif c.residual == "dot":                                                # cross term only
+            R_sq = dot_residual(Q[:, i0:i1], K, E)
         else:
             R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
-        if c.qk_norm or c.flat_precision:
+        if c.qk_norm or c.flat_precision or c.residual == "dot":
             R_sq = _graph_break(R_sq)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)

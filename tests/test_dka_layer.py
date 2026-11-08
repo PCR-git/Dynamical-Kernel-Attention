@@ -378,6 +378,28 @@ def test_flat_precision_and_zero_decay():
     close(zd.sde_params()["sigma_sq"], ref.sde_params()["sigma_sq"], 1e-6)
 
 
+def test_dot_residual():
+    """residual='dot': the exponential-weight logits differ from the Euclidean ones by the key-only |K|^2 and
+    query-only E^2 |Q|^2 terms; the layer needs the exponential weight."""
+    from dka.kernels import dot_residual, dka_residual_norm_sq
+    torch.manual_seed(0)
+    Q, K = torch.randn(1, 4, H, D // 2, 2, dtype=F64), torch.randn(1, 4, H, D // 2, 2, dtype=F64)
+    E = torch.rand(1, 4, 4, H, dtype=F64)
+    q_sq = Q.pow(2).sum(dim=(-1, -2))[:, :, None, :]
+    k_sq = K.pow(2).sum(dim=(-1, -2))[:, None, :, :]
+    close(dot_residual(Q, K, E), dka_residual_norm_sq(Q, K, E, E * E) - k_sq - E * E * q_sq, 1e-10)
+    try:
+        make_layer(residual="dot")                                  # needs the exponential weight
+        raise AssertionError("residual='dot' with the Student-t weight was accepted")
+    except ValueError:
+        pass
+    x, t = inputs(N=8)
+    layer = make_layer(residual="dot", robust_weight=False)
+    out, info = layer(x, t_measure=t, return_metadata=True)
+    out.square().mean().backward()
+    assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all() for p in layer.parameters())
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

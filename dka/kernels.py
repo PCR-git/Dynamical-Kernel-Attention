@@ -191,6 +191,15 @@ def dka_residual_norm_sq(Q_rot, K_rot, E, h, c=1.0):
     return (c * k_sq + h * q_sq - cross).clamp_min(0)
 
 
+def dot_residual(Q_rot, K_rot, E):
+    """
+    Cross term of the key-frame residual alone, -2 E Re<Q~_i, K~_j>: ||K~_j - E Q~_i||^2 without the key-only
+    |K_j|^2 and the query-only E^2 |Q_i|^2. With the exponential weight the content logit is 2 E Re<Q~_i, K~_j> /
+    (nu Sigma_n), a decayed dot product. Can be negative (no clamp). Shapes as dka_residual_norm_sq.
+    """
+    return -2 * E * torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+
+
 def polar_residual_norm_sq(Q_rot, K_rot, E, eps=1e-5):
     """
     Directional residual of the polar model with stochastic dynamics (radial-tangential filter, Stochastic
