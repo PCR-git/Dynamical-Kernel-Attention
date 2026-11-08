@@ -6,8 +6,9 @@ images/eviction/eviction_curve.pdf (and .png):
 
 Reads the eviction_*.txt / .log sweeps written by eval_eviction.py (rows "model policy [param] cache ppl ...") and
 plots perplexity on positions 2048-4096 against kept keys per head: lines for sliding windows (RoPE, ALiBi, RFA,
-DKA), calibrated windows (eps sweep, fitted on validation blocks) for ALiBi and DKA, bound windows for DKA, and
-dotted horizontal lines at each model's full-context perplexity. No GPU needed.
+DKA; DKA's also at the per-head policies' cache sizes), calibrated windows (eps sweep, fitted on validation blocks)
+for ALiBi and DKA, ALiBi's slope windows, DKA's bound windows and its calibrated and bound windows capped at the
+training length, and dotted horizontal lines at each model's full-context perplexity. No GPU needed.
 """
 import argparse
 import os
@@ -19,15 +20,16 @@ from common import IMAGES
 
 # sweep file -> which (model, policy) rows to take from it
 SOURCES = {
-    "eviction_sweep.txt": {("B1", "uniform"), ("B2", "uniform"), ("B2", "full")},
-    "eviction_b1.txt": {("DKA", "uniform"), ("DKA", "full"), ("DKA", "bound")},     # bound eps 0.3 ... 0.003
+    "eviction_sweep.txt": {("B1", "uniform"), ("B2", "uniform"), ("B2", "full"), ("B2", "thresh")},
+    "eviction_b1.txt": {("DKA", "uniform"), ("DKA", "full"), ("DKA", "bound"), ("DKA", "boundcap")},
     "eviction_b1_others.txt": {("RFA", "uniform"), ("RFA", "full")},
-    "eviction_b1_val_part1.log": {("DKA", "cal"), ("RFA", "cal")},
+    "eviction_b1_matched.txt": {("DKA", "uniform")},                                # W at the per-head cache sizes
+    "eviction_b1_val_part1.log": {("DKA", "cal"), ("RFA", "cal"), ("DKA", "calcap")},
     "eviction_b1_val2.txt": {("ALiBi", "cal")},
 }
 NAMES = {"B1": "RoPE", "B2": "ALiBi", "ALiBi": "ALiBi", "RFA": "RFA", "DKA": "DKA"}
 COLORS = {"RoPE": "#E69F00", "ALiBi": "#0072B2", "RFA": "#CC79A7", "DKA": "#000000"}
-ROW = re.compile(r"^(\w+)\s+(?:(full)|(uniform|cal|bound)\s+[\d.e-]+)\s+([\d.]+)\s+([\d.]+)\s")
+ROW = re.compile(r"^(\w+)\s+(?:(full)|(uniform|calcap|cal|boundcap|bound|thresh)\s+[\d.e-]+)\s+([\d.]+)\s+([\d.]+)\s")
 
 
 def read_rows(directory):
@@ -64,6 +66,10 @@ def main():
                 label=f"{model}, calibrated")
     x, y = zip(*rows[("DKA", "bound")])
     ax.plot(x, y, "D", color=COLORS["DKA"], ms=5.5, ls="none", label="DKA, bound")
+    x, y = zip(*rows[("ALiBi", "thresh")])
+    ax.plot(x, y, "v", color=COLORS["ALiBi"], ms=5.5, ls="none", label="ALiBi, slope windows")
+    x, y = zip(*(rows[("DKA", "calcap")] + rows[("DKA", "boundcap")]))
+    ax.plot(x, y, "P", color=COLORS["DKA"], ms=6, ls="none", label="DKA, capped at 512")
 
     ax.set_xscale("log")
     ax.set_xlim(48, 3300)
