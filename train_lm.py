@@ -1,8 +1,9 @@
 """
-Train a language model (RFA or baseline) on WikiText-103 or BabyLM-2025.
+Train a language model (RFA or baseline) on WikiText-103, BabyLM-2025 or PG-19.
 
     python train_lm.py --dataset wikitext103 --preset M3 --compile
     python train_lm.py --dataset babylm --preset B1 --batch-size 12
+    python train_lm.py --dataset pg19 --preset D3.b1.r1e4 --compile   # one pass over the books in --epochs parts
     python train_lm.py --dataset wikitext103 --preset M2 --set damping=0.5     # override any args field
     python train_lm.py --dataset wikitext103 --preset M3 --resume runs/wikitext103/.../resume.pt
 
@@ -28,7 +29,7 @@ matplotlib.use("Agg")
 import torch
 
 from dka.training import single_epoch_lm, evaluate_lm
-from dka.training.lm_data import DATASETS, load_tokenizer, load_lm_datasets, make_dataloaders
+from dka.training.lm_data import DATASETS, load_tokenizer, load_lm_datasets, make_dataloaders, make_pg19_dataloaders
 from dka.training.presets import PRESETS, make_args, build_language_model
 from dka.utils import count_parameters, seed_everything
 from visualization import plot_training_progress_lm
@@ -88,8 +89,12 @@ def main():
 
     # --- Data ---
     tokenizer = load_tokenizer()
-    lm_datasets = load_lm_datasets(cli.dataset, tokenizer, block_size=args.seq_len, root=cli.data_dir, num_proc=cli.num_proc)
-    loaders = make_dataloaders(lm_datasets, tokenizer, args.batch_size)
+    if cli.dataset == "pg19":   # one pass over the books, split into --epochs parts
+        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir, cli.num_proc)
+    else:
+        lm_datasets = load_lm_datasets(cli.dataset, tokenizer, block_size=args.seq_len, root=cli.data_dir,
+                                       num_proc=cli.num_proc)
+        loaders = make_dataloaders(lm_datasets, tokenizer, args.batch_size)
     if cli.max_steps:
         from itertools import islice
         loaders = {k: list(islice(v, cli.max_steps)) for k, v in loaders.items()}
@@ -119,6 +124,8 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         history, start_epoch = ckpt["history"], ckpt["epoch"] + 1
+        if hasattr(getattr(loaders["train"], "sampler", None), "part"):   # PG-19: continue with the next part
+            loaders["train"].sampler.part = start_epoch
         print(f"Resumed from {cli.resume} at epoch {start_epoch}")
 
     if cli.resume:

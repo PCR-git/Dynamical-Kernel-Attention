@@ -21,12 +21,14 @@ import time
 
 import torch
 
-from dka.training.lm_data import load_tokenizer, _raw_datasets, _tokenize, _group_texts
+from dka.training.lm_data import load_tokenizer, pg19_blocks, _raw_datasets, _tokenize, _group_texts
 from dka.training.presets import build_language_model
 
 
 def test_blocks(dataset, tokenizer, block_size, root, num_proc, split="test"):
     """[n_blocks, block_size] token ids of a split (default test), grouped as in training."""
+    if dataset == "pg19":
+        return pg19_blocks(split, tokenizer, block_size, root, num_proc)
     babylm = dataset == "babylm"
     raw = _raw_datasets(dataset, root)[split]
     tok = raw.map(_tokenize, batched=True, num_proc=num_proc, remove_columns=["text"],
@@ -59,7 +61,7 @@ def perplexity(model, blocks, pad_token_id, device):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("runs", nargs="+", help="run directories written by train_lm.py")
-    p.add_argument("--dataset", choices=("wikitext103", "babylm"), required=True)
+    p.add_argument("--dataset", choices=("wikitext103", "babylm", "pg19"), required=True)
     p.add_argument("--lengths", type=int, nargs="+", default=[512, 1024, 2048, 4096])
     p.add_argument("--data-dir", default="datasets")
     p.add_argument("--num-proc", type=int, default=4)
