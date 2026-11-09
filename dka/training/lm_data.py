@@ -161,12 +161,15 @@ class PartSampler:
     One pass over the training blocks, split into n_parts "epochs": a fixed random permutation of the blocks, of
     which each iteration yields the next part. The per-epoch checkpoints, validation and LR schedule of train_lm.py
     then work unchanged, and no block is seen twice. Set .part to the epoch to start from when resuming.
+    n_used < n_blocks keeps the first n_used blocks of the permutation (a token budget; smaller budgets are subsets).
     """
 
-    def __init__(self, n_blocks, n_parts, seed=2025):
+    def __init__(self, n_blocks, n_parts, seed=2025, n_used=None):
         import numpy as np
-        self.perm = np.random.default_rng(seed).permutation(n_blocks)
-        self.size = n_blocks // n_parts
+        if n_used is not None and not n_parts <= n_used <= n_blocks:
+            raise ValueError(f"n_used={n_used} must lie in [n_parts={n_parts}, n_blocks={n_blocks}]")
+        self.perm = np.random.default_rng(seed).permutation(n_blocks)[:n_used]
+        self.size = len(self.perm) // n_parts
         self.n_parts, self.part = n_parts, 0
 
     def __len__(self):
@@ -178,12 +181,16 @@ class PartSampler:
         return iter(self.perm[start:start + self.size].tolist())
 
 
-def make_pg19_dataloaders(tokenizer, block_size, batch_size, n_parts, root="datasets"):
-    """Train loader over one pass of PG-19 in n_parts parts (PartSampler); validation and test in order."""
+def make_pg19_dataloaders(tokenizer, block_size, batch_size, n_parts, root="datasets", max_tokens=None):
+    """
+    Train loader over one pass of PG-19 in n_parts parts (PartSampler), or over max_tokens training tokens (a
+    fixed random subset of the blocks) if given; validation and test in order.
+    """
     from torch.utils.data import DataLoader
     loaders = {}
     for split in ("train", "validation", "test"):
         blocks = _StreamBlocks(pg19_tokens(split, tokenizer, root), block_size, tokenizer.pad_token_id)
-        sampler = PartSampler(len(blocks), n_parts) if split == "train" else None
+        n_used = None if max_tokens is None else min(int(max_tokens) // block_size, len(blocks))
+        sampler = PartSampler(len(blocks), n_parts, n_used=n_used) if split == "train" else None
         loaders[split] = DataLoader(blocks, batch_size=batch_size, sampler=sampler)
     return loaders

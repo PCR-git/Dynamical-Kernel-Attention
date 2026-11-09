@@ -4,6 +4,7 @@ Train a language model (RFA or baseline) on WikiText-103, BabyLM-2025 or PG-19.
     python train_lm.py --dataset wikitext103 --preset M3 --compile
     python train_lm.py --dataset babylm --preset B1 --batch-size 12
     python train_lm.py --dataset pg19 --preset D3.b1.r1e4 --compile   # one pass over the books in --epochs parts
+    python train_lm.py --dataset pg19 --preset D3.b1.r1e4 --compile --max-tokens 2e9 --epochs 20
     python train_lm.py --dataset wikitext103 --preset M2 --set damping=0.5     # override any args field
     python train_lm.py --dataset wikitext103 --preset M3 --resume runs/wikitext103/.../resume.pt
 
@@ -72,6 +73,9 @@ def main():
     p.add_argument("--grad-checkpointing", action="store_true", help="trade ~30%% speed for much less memory")
     p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published N(0,1)")
     p.add_argument("--max-steps", type=int, default=None, help="limit train/eval batches per epoch (quick tests)")
+    p.add_argument("--max-tokens", type=float, default=None,
+                   help="PG-19: train on this many tokens (e.g. 2e9), a fixed random subset of the blocks, "
+                        "split into --epochs parts; default one full pass (3.07B)")
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override fields of args")
     p.add_argument("--resume", default=None, help="resume.pt of an unfinished run (continues in its directory)")
     p.add_argument("--name", default=None, help="run directory name (default <backbone>__<preset>)")
@@ -89,8 +93,11 @@ def main():
 
     # --- Data ---
     tokenizer = load_tokenizer()
-    if cli.dataset == "pg19":   # one pass over the books, split into --epochs parts
-        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir)
+    if cli.dataset == "pg19":   # one pass over the books (or --max-tokens of them), split into --epochs parts
+        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir,
+                                        max_tokens=cli.max_tokens)
+    elif cli.max_tokens is not None:
+        raise ValueError("--max-tokens applies to --dataset pg19 only")
     else:
         lm_datasets = load_lm_datasets(cli.dataset, tokenizer, block_size=args.seq_len, root=cli.data_dir,
                                        num_proc=cli.num_proc)
