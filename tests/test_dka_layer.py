@@ -425,16 +425,19 @@ def test_dot_residual():
     q_sq = Q.pow(2).sum(dim=(-1, -2))[:, :, None, :]
     k_sq = K.pow(2).sum(dim=(-1, -2))[:, None, :, :]
     close(dot_residual(Q, K, E), dka_residual_norm_sq(Q, K, E, E * E) - k_sq - E * E * q_sq, 1e-10)
+    close(dot_residual(Q, K, 1.0), dot_residual(Q, K, E) / E, 1e-10)       # dot_noE: the same cross term without E
     try:
         make_layer(residual="dot")                                  # needs the exponential weight
         raise AssertionError("residual='dot' with the Student-t weight was accepted")
     except ValueError:
         pass
     x, t = inputs(N=8)
-    layer = make_layer(residual="dot", robust_weight=False)
-    out, info = layer(x, t_measure=t, return_metadata=True)
-    out.square().mean().backward()
-    assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all() for p in layer.parameters())
+    for residual in ("dot", "dot_noE"):
+        layer = make_layer(residual=residual, robust_weight=False)
+        out, info = layer(x, t_measure=t, return_metadata=True)
+        out.square().mean().backward()
+        assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all()
+                                                 for p in layer.parameters())
 
 
 def test_rfa_null_slot():

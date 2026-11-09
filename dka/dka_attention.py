@@ -253,9 +253,11 @@ class MultiheadIsotropicDKA(nn.Module):
             R_sq = polar_residual_norm_sq(Q[:, i0:i1], K, 1.0, c.epsilon)
         elif c.residual == "dot":                                                # cross term only
             R_sq = dot_residual(Q[:, i0:i1], K, E)
+        elif c.residual == "dot_noE":                                            # cross term, not attenuated
+            R_sq = dot_residual(Q[:, i0:i1], K, 1.0)
         else:
             R_sq = dka_residual_norm_sq(Q[:, i0:i1], K, E, h, c_noise)
-        if c.qk_norm or c.flat_precision or c.residual in ("dot", "polar_obs"):
+        if c.qk_norm or c.flat_precision or c.residual in ("dot", "dot_noE", "polar_obs"):
             R_sq = _graph_break(R_sq)
         tau = torch.exp(self.log_tau) if self.log_tau is not None else None
         if c.weight == "mixture":                                               # w = P(relevant | key)

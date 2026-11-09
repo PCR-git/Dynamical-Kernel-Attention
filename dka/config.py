@@ -216,10 +216,11 @@ class DKAConfig:
     # Content residual: "euclidean" = ||K~ - E Q~||^2 (the paper); "polar" = the polar model's directional residual
     # E^2 |K|^2 2 (1 - cos(Q~, K~)): the key against the query direction, lag-invariant match (with qk_norm, |K| = s_h
     # and the weight stays <= 1 / Sigma_n, so the eviction bound holds); "dot" = the cross term -2 E Re<Q~, K~> alone
-    # (the |K|^2 and E^2 |Q|^2 terms dropped: dot-product content, needs the exponential weight)
+    # (the |K|^2 and E^2 |Q|^2 terms dropped: dot-product content, needs the exponential weight); "dot_noE" = the
+    # same without the attenuation, -2 Re<Q~, K~>: the content term keeps its strength at every lag
     # "polar_obs" = the polar appendix with the test and the information separated: d^2 = 2 kappa^obs (1 - cos), with
     # kappa^obs = m_j^2 / Sigma_{n,t} in the key's own units (no E), information E^2 kappa^obs, null c_h kappa_ii
-    residual: Literal["euclidean", "polar", "dot", "polar_obs"] = "euclidean"
+    residual: Literal["euclidean", "polar", "dot", "dot_noE", "polar_obs"] = "euclidean"
     # polar_obs forcing in Sigma_{n,t}: "constant" v_inf (1 - E^2) as in DKA, or "magnitude" m_j^2 (1 - E^2) / 2d
     polar_forcing: Literal["constant", "magnitude"] = "constant"
     init_rho_sq: float = 1e-3        # polar_obs: initial rho^2 (measurement noise rho^2 m^2 next to eta^2)
@@ -247,8 +248,8 @@ class DKAConfig:
         if self.residual == "polar_obs" and (self.inflation is not None or self.weight != "robust"
                                              or self.prior not in ("tokens", "none")):
             raise ValueError("residual='polar_obs' needs no inflation, weight='robust' and prior 'tokens' or 'none'")
-        if self.residual == "dot" and (self.inflation is not None or self.weight != "robust" or self.robust_weight):
-            raise ValueError("residual='dot' needs no inflation and the exponential weight (robust_weight=False)")
+        if self.residual in ("dot", "dot_noE") and (self.inflation is not None or self.weight != "robust" or self.robust_weight):
+            raise ValueError(f"residual={self.residual!r} needs no inflation and the exponential weight (robust_weight=False)")
         if self.flat_precision and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("flat_precision needs no inflation and weight='robust'")
 

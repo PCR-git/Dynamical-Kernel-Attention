@@ -234,6 +234,7 @@ PRESETS = {
 #           c_h kappa_ii, sigma_t^2 = eta^2 + rho^2 m^2; forcing v_inf (1 - E^2) (.const) or m^2 (1 - E^2) / 2d (.mag)
 #   .dot    dot-product content: .exp with the residual's |K|^2 and E^2 |Q|^2 terms dropped, logit
 #           -log Sigma_n + 2 E Re<Q~, K~> / (nu Sigma_n); everything else as DKA (compare with .exp)
+#   .dot.noE  .dot without the attenuation on the content term: -log Sigma_n + 2 Re<Q~, K~> / (nu Sigma_n)
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
 # and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
@@ -244,6 +245,7 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "cap3": dict(dka_decay_cap=3 / 512), "cap5": dict(dka_decay_cap=5 / 512),
               "polar": dict(dka_residual="polar"), "polar.qkn": dict(dka_residual="polar", dka_qk_norm=True),
               "dot": dict(use_robust_weight=False, dka_residual="dot"),
+              "dot.noE": dict(use_robust_weight=False, dka_residual="dot_noE"),
               "polar.const": dict(dka_residual="polar_obs", dka_polar_forcing="constant"),
               "polar.mag": dict(dka_residual="polar_obs", dka_polar_forcing="magnitude")}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
@@ -257,6 +259,7 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     _b5 = dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=_b)
     PRESETS.setdefault(f"B5.{_tag}.r1e4", _b5)
     PRESETS.setdefault(f"B10.{_tag}.r1e4", dict(_b5, use_softmax_one=True))
+    PRESETS.setdefault(f"B10.{_tag}.r1e4.I", dict(_b5, baseline_output="innovation", baseline_null=True))  # B5 + null V_i
     for _x, _s in (("x05", 0.5), ("x2", 2.0)):
         PRESETS.setdefault(f"B10.{_tag}.r1e4.{_x}", dict(_b5, use_softmax_one=True, bias_slope_scale=_s))
 
