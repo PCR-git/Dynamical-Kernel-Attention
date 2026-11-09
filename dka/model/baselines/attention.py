@@ -9,11 +9,12 @@ from ..config import AttentionConfig
 from .pos_encoding import RoPE, SCRoPE, XPos, get_alibi_slopes
 
 
-def softmax_plus_one(scores):
-    """exp(s_j) / (1 + sum_k exp(s_k)) over the last dim: softmax with an extra null logit fixed at 0."""
-    m = scores.amax(dim=-1, keepdim=True).clamp(min=0.0)
+def softmax_plus_one(scores, null_logit=0.0):
+    """exp(s_j) / (exp(b) + sum_k exp(s_k)) over the last dim: softmax with an extra null logit b (default 0)."""
+    b = null_logit.to(scores.dtype) if torch.is_tensor(null_logit) else scores.new_tensor(null_logit)
+    m = torch.maximum(scores.amax(dim=-1, keepdim=True), b)
     e = torch.exp(scores - m)
-    return e / (e.sum(dim=-1, keepdim=True) + torch.exp(-m))
+    return e / (e.sum(dim=-1, keepdim=True) + torch.exp(b - m))
 
 
 class MultiHeadAttentionLayer(nn.Module):
@@ -56,6 +57,9 @@ class MultiHeadAttentionLayer(nn.Module):
         if c.kerple_log:
             self.kerple_p = nn.Parameter(2 * torch.rand(c.n_heads))
             self.kerple_a = nn.Parameter(torch.rand(c.n_heads))
+
+        if c.learned_null:
+            self.null_logit = nn.Parameter(torch.zeros(1, c.n_heads, 1, 1))   # b_h: the null slot holds V_i
 
     def forward(self, x, t_measure=None, causal=True, return_metadata=False):
         """
@@ -107,8 +111,13 @@ class MultiHeadAttentionLayer(nn.Module):
 
         if c.softmax_plus_one:                       # an extra null logit 0: weights sum to at most 1
             attn_weights = softmax_plus_one(scores)
+        elif c.learned_null:                         # null logit b_h, whose value is V_i (enters below)
+            attn_weights = softmax_plus_one(scores, self.null_logit)
         else:
             attn_weights = F.softmax(scores, dim=-1)
         if c.decay_damping is not None:
             attn_weights = attn_weights * torch.exp(-self.mu.view(1, -1, 1, 1) * dist)
-        return torch.matmul(attn_weights, V), attn_weights
+        context = torch.matmul(attn_weights, V)
+        if c.output == "innovation":                 # sum_j w_j V_j + w_null V_i - V_i = sum_j w_j (V_j - V_i)
+            context = context - attn_weights.sum(dim=-1, keepdim=True) * V[:, :, i0:i1]
+        return context, attn_weights

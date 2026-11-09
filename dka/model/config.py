@@ -22,6 +22,11 @@ class AttentionConfig:
         kerple_log:    KERPLE's logarithmic bias -p_h log(1 + a_h |i - j|) on the logits, p_h and a_h learned per head
                        (initialized uniform on [0, 2] and [0, 1], clamped at 0.01, as in the KERPLE code)
         softmax_plus_one: an extra null logit 0 in the softmax (Miller, 2023), so a head can attend to nothing
+        output:        "estimate" = W_o sum_j w_j V_j (standard) or "innovation" = W_o (sum_j w_j V_j - V_i), DKA's
+                       output form, so the attention returns a change of the current value
+        learned_null:  innovation only: a null slot with value V_i and a learned logit b_h per head (init 0), so
+                       the output is sum_j w_j (V_j - V_i) with sum_j w_j = 1 - w_null (DKA's null: the current
+                       estimate, against softmax_plus_one's zero)
         yarn_original_length: training length; if set, RoPE / SC-RoPE apply YaRN zero-shot beyond it (inference)
         rope_base:     base of the RoPE / SC-RoPE spectrum (and of the coupled decays and bias slopes)
         bias_slope_scale: multiplies the coupled bias slopes 2 mu_h (1 = DKA's prediction; tests whether it is best)
@@ -42,8 +47,14 @@ class AttentionConfig:
     yarn_original_length: Optional[int] = None
     rope_base: float = 10000.0
     bias_slope_scale: float = 1.0
+    output: Literal["estimate", "innovation"] = "estimate"
+    learned_null: bool = False
 
     def __post_init__(self):
+        if self.output not in ("estimate", "innovation"):
+            raise ValueError(f"output must be 'estimate' or 'innovation', got {self.output!r}")
+        if self.learned_null and (self.output != "innovation" or self.softmax_plus_one):
+            raise ValueError("learned_null needs output='innovation' and no softmax_plus_one")
         if self.width % self.n_heads != 0:
             raise ValueError(f"width={self.width} is not divisible by n_heads={self.n_heads}")
         if self.rope not in (None, "rope", "sc_rope", "xpos"):

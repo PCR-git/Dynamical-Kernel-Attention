@@ -61,6 +61,8 @@ BASE_ARGS = dict(
     # Baseline attention (only used by "B" presets)
     use_rope=True, use_alibi=False, use_relative_decay_vanilla=False, use_sc_linear_bias=False,
     use_kerple_log=False, use_xpos=False, use_softmax_one=False,
+    baseline_output="estimate",       # "innovation" = W_o (sum_j w_j V_j - V_i), DKA's output form
+    baseline_null=False,              # innovation only: null slot with value V_i and a learned logit per head
     yarn_original_length=None,        # inference: e.g. --set yarn_original_length=512 applies YaRN to RoPE models
 )
 
@@ -96,6 +98,9 @@ PRESETS = {
     "B7":   dict(use_rope=False, use_alibi=False, use_xpos=True),                   # xPos
     "B8":   dict(use_rope=False, use_alibi=False),                                  # NoPE
     "B9":   dict(use_rope=True, use_alibi=False, use_softmax_one=True),             # RoPE + softmax plus one
+    "B1.I": dict(use_rope=True, use_alibi=False, baseline_output="innovation"),     # RoPE, innovation output
+    "B1.I.null": dict(use_rope=True, use_alibi=False, baseline_output="innovation",  # + null slot holding V_i
+                      baseline_null=True),
     "B10":  dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True,          # B5 + softmax plus one: DKA
                  use_SC_RoPE=True, damping=5.0, use_softmax_one=True),             # without the noise model
     # --- RFA models ---

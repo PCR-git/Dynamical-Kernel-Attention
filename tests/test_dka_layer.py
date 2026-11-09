@@ -602,6 +602,40 @@ def test_float32():
             assert prm.grad is None or torch.isfinite(prm.grad).all(), scale
 
 
+
+def test_baseline_innovation_and_null():
+    """Baselines: output='innovation' returns W_o (sum_j w_j V_j - V_i); learned_null adds a null slot holding V_i,
+    so the output is W_o sum_j w_j (V_j - V_i) with the weights a softmax over the keys and the logit b_h."""
+    from dka.model.baselines.attention import MultiHeadAttentionLayer
+    from dka.model.config import AttentionConfig
+    torch.manual_seed(0)
+    x = torch.randn(2, 9, 16, dtype=F64)
+    est = MultiHeadAttentionLayer(AttentionConfig(d_model=16, n_heads=2, width=16)).double()
+    inn = MultiHeadAttentionLayer(AttentionConfig(d_model=16, n_heads=2, width=16, output="innovation")).double()
+    nul = MultiHeadAttentionLayer(AttentionConfig(d_model=16, n_heads=2, width=16, output="innovation",
+                                                  learned_null=True)).double()
+    with torch.no_grad():
+        for m in (inn, nul):
+            m.load_state_dict(est.state_dict(), strict=False)
+        nul.null_logit.copy_(torch.tensor([0.7, -1.3]).view(1, 2, 1, 1))
+    V = est.value_projection(x)
+    W = est.output_projection
+    close(inn(x)[0], est(x)[0] - (V @ W.weight.T), 1e-12)        # W_o is affine: W_o(c - V_i) = W_o c - W V_i
+
+    out, meta = nul(x)
+    Q, K = (nul.rope(P(x).view(2, 9, 2, 8)).transpose(1, 2) for P in (nul.query_projection, nul.key_projection))
+    Vh = V.view(2, 9, 2, 8).transpose(1, 2)
+    scores = (Q @ K.transpose(-2, -1) / math.sqrt(8)).masked_fill(torch.ones(9, 9).triu(1).bool(), float("-inf"))
+    b = nul.null_logit.expand(2, 2, 9, 1)
+    w = torch.softmax(torch.cat([scores, b], -1), -1)[..., :-1]
+    ref = torch.einsum("bhij,bhijd->bhid", w, Vh[:, :, None] - Vh[:, :, :, None])
+    close(out, W(ref.transpose(1, 2).reshape(2, 9, 16)), 1e-12)
+    try:
+        AttentionConfig(d_model=16, n_heads=2, width=16, learned_null=True)
+        raise AssertionError("learned_null without the innovation output was accepted")
+    except ValueError:
+        pass
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
