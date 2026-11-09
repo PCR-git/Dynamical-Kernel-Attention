@@ -101,47 +101,40 @@ def make_dataloaders(lm_datasets, tokenizer, batch_size):
 PG19_SHARDS = {"train": 23, "validation": 1, "test": 1}
 
 
-def _tokenize_books(examples, tokenizer):
-    eos = tokenizer.eos_token_id
-    return {"ids": [ids + [eos] for ids in tokenizer(examples["text"])["input_ids"]]}
-
-
-def pg19_tokens(split, tokenizer, root="datasets", num_proc=4):
-    """uint16 memmap of a split's token stream, written on first use (books in file order, EOS after each)."""
+def pg19_tokens(split, tokenizer, root="datasets", batch_books=16):
+    """
+    uint16 memmap of a split's token stream, written on first use (books in file order, EOS after each).
+    Streams batch_books books at a time from the parquet files to the token file, so memory stays at a few GB and
+    no Arrow cache is written; the fast tokenizer encodes each batch on all cores.
+    """
     import numpy as np
     path = os.path.join(root, "pg19", "tokens", f"{split}.bin")
     if not os.path.exists(path):
-        from datasets import load_dataset
+        import pyarrow.parquet as pq
         files = sorted(glob.glob(os.path.join(root, "pg19", "data", f"{split}-*.parquet")))
         if len(files) != PG19_SHARDS[split]:
             raise FileNotFoundError(f"PG-19 {split}: {len(files)} of {PG19_SHARDS[split]} parquet files in "
                                     f"{os.path.join(root, 'pg19', 'data')} (download incomplete?)")
-        tokenizer.model_max_length = int(1e12)          # whole books: silence the 1024-token length warning
-        raw = load_dataset("parquet", data_files={split: files})[split]
-        tok = raw.map(_tokenize_books, batched=True, batch_size=8, num_proc=num_proc,
-                      remove_columns=raw.column_names, fn_kwargs={"tokenizer": tokenizer})
-        column = tok.with_format("arrow")["ids"]
-        n = sum(len(chunk.flatten()) for chunk in column.chunks)
+        backend, eos = tokenizer.backend_tokenizer, tokenizer.eos_token_id   # no length limit, no attention masks
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        out = np.memmap(path + ".tmp", dtype=np.uint16, mode="w+", shape=(n,))
-        k = 0
-        for chunk in column.chunks:
-            values = chunk.flatten().to_numpy().astype(np.uint16)
-            out[k:k + len(values)] = values
-            k += len(values)
-        assert k == n
-        out.flush()
-        del out
+        n_books = n = 0
+        with open(path + ".tmp", "wb") as out:
+            for file in files:
+                for batch in pq.ParquetFile(file).iter_batches(batch_size=batch_books, columns=["text"]):
+                    for enc in backend.encode_batch(batch.column("text").to_pylist(), add_special_tokens=False):
+                        ids = np.append(np.asarray(enc.ids, dtype=np.uint16), np.uint16(eos))
+                        out.write(ids.tobytes())
+                        n_books, n = n_books + 1, n + len(ids)
         os.replace(path + ".tmp", path)
-        print(f"PG-19 {split}: {len(raw)} books, {n:,} tokens -> {path}")
+        print(f"PG-19 {split}: {n_books} books, {n:,} tokens -> {path}")
     return np.memmap(path, dtype=np.uint16, mode="r")
 
 
-def pg19_blocks(split, tokenizer, block_size, root="datasets", num_proc=4):
+def pg19_blocks(split, tokenizer, block_size, root="datasets"):
     """[n_blocks, block_size] int64 tensor of a split's non-overlapping blocks (the trailing remainder dropped)."""
     import numpy as np
     import torch
-    tokens = pg19_tokens(split, tokenizer, root, num_proc)
+    tokens = pg19_tokens(split, tokenizer, root)
     n = len(tokens) // block_size
     return torch.from_numpy(np.asarray(tokens[:n * block_size]).astype(np.int64).reshape(n, block_size))
 
@@ -185,12 +178,12 @@ class PartSampler:
         return iter(self.perm[start:start + self.size].tolist())
 
 
-def make_pg19_dataloaders(tokenizer, block_size, batch_size, n_parts, root="datasets", num_proc=4):
+def make_pg19_dataloaders(tokenizer, block_size, batch_size, n_parts, root="datasets"):
     """Train loader over one pass of PG-19 in n_parts parts (PartSampler); validation and test in order."""
     from torch.utils.data import DataLoader
     loaders = {}
     for split in ("train", "validation", "test"):
-        blocks = _StreamBlocks(pg19_tokens(split, tokenizer, root, num_proc), block_size, tokenizer.pad_token_id)
+        blocks = _StreamBlocks(pg19_tokens(split, tokenizer, root), block_size, tokenizer.pad_token_id)
         sampler = PartSampler(len(blocks), n_parts) if split == "train" else None
         loaders[split] = DataLoader(blocks, batch_size=batch_size, sampler=sampler)
     return loaders

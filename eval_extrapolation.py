@@ -28,7 +28,7 @@ from dka.training.presets import build_language_model
 def test_blocks(dataset, tokenizer, block_size, root, num_proc, split="test"):
     """[n_blocks, block_size] token ids of a split (default test), grouped as in training."""
     if dataset == "pg19":
-        return pg19_blocks(split, tokenizer, block_size, root, num_proc)
+        return pg19_blocks(split, tokenizer, block_size, root)
     babylm = dataset == "babylm"
     raw = _raw_datasets(dataset, root)[split]
     tok = raw.map(_tokenize, batched=True, num_proc=num_proc, remove_columns=["text"],

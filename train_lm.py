@@ -90,7 +90,7 @@ def main():
     # --- Data ---
     tokenizer = load_tokenizer()
     if cli.dataset == "pg19":   # one pass over the books, split into --epochs parts
-        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir, cli.num_proc)
+        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir)
     else:
         lm_datasets = load_lm_datasets(cli.dataset, tokenizer, block_size=args.seq_len, root=cli.data_dir,
                                        num_proc=cli.num_proc)
