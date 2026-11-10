@@ -459,6 +459,38 @@ def test_plain_values():
         close(plain(x, t_measure=t * 5, return_metadata=True)[1]["attn_mat"].sum(2), 1.0, 1e-10)
 
 
+def test_b1_equivalence():
+    """DKA reduces exactly to RoPE attention (B1) with zero decay (E = h = 1), flat precision, the dot-product score
+    without attenuation, the exponential weight, no null slot, the estimate output and no value rotation. DKA's
+    coordinate with frequency -theta_k is rotated by e^{+i theta_k t}, as RoPE's pair (2k, 2k+1); B1's weights are
+    copied there, the +theta_k coordinates get zero weights, and W_q is scaled by nu eta^2 / (2 sqrt d) so that the
+    content logit 2 <Q~, K~> / (nu eta^2) equals RoPE's q.k / sqrt(d)."""
+    from dka.model.baselines.attention import MultiHeadAttentionLayer
+    from dka.model.config import AttentionConfig
+    torch.manual_seed(0)
+    rope = MultiHeadAttentionLayer(AttentionConfig(d_model=D_MODEL, n_heads=H, width=H * D, rope="rope")).double()
+    dka = make_layer(mu=(0.0, 0.0, 0.0), zero_decay=True, flat_precision=True, residual="dot_noE", robust_weight=False,
+                     prior="none", output="estimate", rotate_values=False, temperature=False)
+    with torch.no_grad():
+        dka.omega.copy_(rope.rope.theta.double().expand(H, D // 2))
+        p = dka.sde_params()
+        rows = torch.tensor([part * H * D + h * D + 2 * k + 1                    # DKA row of B1's row h D + 2k + part
+                             for h in range(H) for k in range(D // 2) for part in range(2)])
+        for W, Wb, s in ((dka.W_q, rope.query_projection, (p["nu"] * p["eta_sq"]).repeat_interleave(D) / (2 * D ** 0.5)),
+                         (dka.W_k, rope.key_projection, 1.0), (dka.W_v, rope.value_projection, 1.0)):
+            W.weight.zero_(), W.bias.zero_()
+            W.weight[rows] = Wb.weight * (s[:, None] if torch.is_tensor(s) else s)
+            W.bias[rows] = Wb.bias * s
+        dka.W_o.weight.zero_()
+        dka.W_o.weight[:, rows] = rope.output_projection.weight
+        dka.W_o.bias.copy_(rope.output_projection.bias)
+    x, _ = inputs(N=12)
+    out_rope, m_rope = rope(x)
+    out_dka, m_dka = dka(x, return_metadata=True)
+    close(m_dka["attn_mat"].permute(0, 3, 1, 2), m_rope["attn_mat"], 1e-12)
+    close(out_dka, out_rope, 1e-12)
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""
