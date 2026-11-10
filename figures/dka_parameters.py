@@ -106,8 +106,11 @@ def traces(history, path):
         print("could not write", path, e)
     plt.close(fig)
 
-    # the same panels one per PDF (dka_traces_<a-f>_<name>.pdf), for LaTeX subfigures; heads slowest (dark) to fastest
-    blues = ["#0d366b", "#184f95", "#1c5cab", "#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef"]
+    # the same panels one per PDF (dka_traces_<a-f>_<name>.pdf), for LaTeX subfigures; heads from slowest (dark red)
+    # through purple to fastest (blue), so neighboring heads are easier to tell apart than on a one-hue ramp
+    from matplotlib.colors import LinearSegmentedColormap
+    ramp = LinearSegmentedColormap.from_list("head", ["#8b1a1a", "#e34948", "#9b4f9e", "#2a78d6", "#5598e7"])
+    blues = [ramp(x) for x in np.linspace(0, 1, share.shape[1])]
     stems = ["a_vinf", "b_eta_sq", "c_snr", "d_nu_over_d", "e_c_h", "f_evidence_share"]
     with plt.rc_context({"font.family": "serif", "font.size": 10, "pdf.fonttype": 42}):
         for stem, (data, title, log) in zip(stems, panels):

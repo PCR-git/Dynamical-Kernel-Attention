@@ -16,6 +16,7 @@ Outputs into images/dka_evidence/ (one PDF per panel):
     dka_evidence_b_repeat_distance.pdf   change in log S_i against D for the heads that respond most, and the
                                          largest change among the others; the loss change on the second copy is
                                          printed (the correlations with loss are printed only)
+    dka_evidence_c_repeat_loss.pdf       change in the loss on the second copy against D, repeat minus control
 """
 import os
 import sys
@@ -138,6 +139,18 @@ def panel_distance(dlogS, dists, horizon, path, n_top=3):
     plt.close(fig)
 
 
+def panel_loss(dnll, dists, path):
+    """dnll: [dist, trial] repeat minus control NLL on the second copy (nats per token)."""
+    m, se = dnll.mean(1), dnll.std(1) / np.sqrt(dnll.shape[1])
+    fig, ax = plt.subplots(figsize=(4.6, 3.4), layout="constrained")
+    ax.errorbar(dists, m, yerr=se, color=LINE_COLORS[0], lw=2, marker="o", ms=5, capsize=2)
+    ax.axhline(0, color=MUTED, lw=0.8)
+    ax.set_ylim(min(m - se) * 1.1, 0.1)
+    style(ax, "distance between copies $D$ (tokens)", r"$\Delta$ NLL on the second copy (nats/token)")
+    fig.savefig(path)
+    plt.close(fig)
+
+
 def main():
     name = sys.argv[1] if len(sys.argv) > 1 else "D3.b1.r1e4"
     cache = CACHE.format(name)
@@ -175,6 +188,7 @@ def main():
     k128 = list(d["dists"]).index(128)
     panel_heads(m[k128], horizon, 128, os.path.join(out_dir, "dka_evidence_a_repeat_heads.pdf"))
     panel_distance(d["dlogS"], d["dists"], horizon, os.path.join(out_dir, "dka_evidence_b_repeat_distance.pdf"))
+    panel_loss(d["dnll"], d["dists"], os.path.join(out_dir, "dka_evidence_c_repeat_loss.pdf"))
     print("saved to", out_dir)
 
 
