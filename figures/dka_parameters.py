@@ -100,8 +100,38 @@ def traces(history, path):
             ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
     axes.flat[-1].legend(title="horizon", fontsize=8, title_fontsize=8, loc="center left", bbox_to_anchor=(1, 0.5))
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+    try:
+        fig.savefig(path, dpi=200, bbox_inches="tight")
+    except OSError as e:                     # e.g. the PNG is open in a viewer on Windows
+        print("could not write", path, e)
     plt.close(fig)
+
+    # the same panels one per PDF (dka_traces_<a-f>_<name>.pdf), for LaTeX subfigures; heads slowest (dark) to fastest
+    blues = ["#0d366b", "#184f95", "#1c5cab", "#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#86b6ef"]
+    stems = ["a_vinf", "b_eta_sq", "c_snr", "d_nu_over_d", "e_c_h", "f_evidence_share"]
+    with plt.rc_context({"font.family": "serif", "font.size": 10, "pdf.fonttype": 42}):
+        for stem, (data, title, log) in zip(stems, panels):
+            fig, ax = plt.subplots(figsize=(4.6, 3.4), layout="constrained")
+            x = steps
+            if stem == "f_evidence_share":             # a per-batch mean: moving average over 20 logs (2000 steps)
+                kernel = np.ones(20) / 20
+                data = np.stack([np.convolve(data[:, k], kernel, mode="valid") for k in range(data.shape[1])], 1)
+                x = steps[len(kernel) - 1:]
+            for k in range(data.shape[1]):
+                ax.plot(x, data[:, k], color=blues[k], lw=1.6, label=f"{horizon[k]:.3g}")
+            ax.set_xlabel("training step")
+            ax.set_ylabel(title)
+            if log:
+                ax.set_yscale("log")
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+            ax.grid(True, color="#e6e6e3", lw=0.6)
+            ax.set_axisbelow(True)
+            if stem == "f_evidence_share":
+                ax.legend(title="horizon (tokens)", frameon=False, fontsize=7, title_fontsize=7, ncol=2,
+                          loc="upper right")
+            fig.savefig(os.path.join(os.path.dirname(path), f"dka_traces_{stem}.pdf"))
+            plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -112,7 +142,7 @@ if __name__ == "__main__":
     step = np.array(history["step"], dtype=float)                    # [n_logged, layers, H]
     out_dir = os.path.join(IMAGES, "dka_params")
     os.makedirs(out_dir, exist_ok=True)
+    traces(history, os.path.join(out_dir, "dka_param_traces.png"))
     params = layer_params(model)
     heatmaps(params, step[:N_AVG].mean(0), step[-N_AVG:].mean(0), os.path.join(out_dir, "dka_param_heatmaps.png"))
-    traces(history, os.path.join(out_dir, "dka_param_traces.png"))
     print("saved to", out_dir, "from", run)

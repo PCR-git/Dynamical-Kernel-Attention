@@ -78,9 +78,10 @@ def main():
     out_dir = os.path.join(IMAGES, "attn_mats")
     os.makedirs(out_dir, exist_ok=True)
     for start in [0] + ([cli.zoom] if cli.zoom is not None else []):
-        path = os.path.join(out_dir, f"dka_attn_{name}_{start}_to_{L}.png")
-        plot(A, null, horizon, start, L, path)
-        print("saved", path)
+        for ext in ("png", "pdf"):
+            path = os.path.join(out_dir, f"dka_attn_{name}_{start}_to_{L}.{ext}")
+            plot(A, null, horizon, start, L, path)
+            print("saved", path)
     if null is not None:
         print("mean null share per head:", np.round(null.mean(1), 3))
 
