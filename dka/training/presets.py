@@ -235,6 +235,8 @@ PRESETS = {
 #   .dot    dot-product content: .exp with the residual's |K|^2 and E^2 |Q|^2 terms dropped, logit
 #           -log Sigma_n + 2 E Re<Q~, K~> / (nu Sigma_n); everything else as DKA (compare with .exp)
 #   .dot.noE  .dot without the attenuation on the content term: -log Sigma_n + 2 Re<Q~, K~> / (nu Sigma_n)
+#   .plain    plain values: weight A E^2 on U v_j instead of A E (estimate U v_j, not U v_j / E), weights sum <= 1
+#   .plain.dot.noE  .dot.noE with plain values
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
 # and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
@@ -246,6 +248,8 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "polar": dict(dka_residual="polar"), "polar.qkn": dict(dka_residual="polar", dka_qk_norm=True),
               "dot": dict(use_robust_weight=False, dka_residual="dot"),
               "dot.noE": dict(use_robust_weight=False, dka_residual="dot_noE"),
+              "plain": dict(dka_plain_values=True),
+              "plain.dot.noE": dict(use_robust_weight=False, dka_residual="dot_noE", dka_plain_values=True),
               "polar.const": dict(dka_residual="polar_obs", dka_polar_forcing="constant"),
               "polar.mag": dict(dka_residual="polar_obs", dka_polar_forcing="magnitude")}
 for _tag, _b in (("b1", 1.0), ("b05", 0.5)):

@@ -293,7 +293,7 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Aggregate decayed values, counter-rotate (Phi^+), proximal innovation ---
         # Euclidean: the measurement E U v_j of h x_i is attenuated, so each key's estimate is U v_j / E (weight A E^2).
         # Polar: the transported direction is unbiased for u_i, so each key's estimate is U v_j itself (weight A E^2).
-        A_hat = A * (h if c.residual in ("polar", "polar_obs") else E)
+        A_hat = A * (h if c.plain_values or c.residual in ("polar", "polar_obs") else E)
         M = torch.einsum("bijh,bjhdc->bihdc", A_hat, V_rot)
         if c.rotate_values:
             M = rotate(M, cos[:, i0:i1], sin[:, i0:i1])

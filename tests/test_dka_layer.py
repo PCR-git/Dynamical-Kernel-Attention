@@ -440,6 +440,25 @@ def test_dot_residual():
                                                  for p in layer.parameters())
 
 
+def test_plain_values():
+    """plain_values: each value's weight is the default one times E (A E^2 instead of A E, same logits and
+    denominator), so the weights sum to at most one, and to one without the null slot; also with dot_noE."""
+    x, t = inputs(N=8)
+    for kw in (dict(), dict(residual="dot_noE", robust_weight=False)):
+        ref, plain = make_layer(**kw), make_layer(plain_values=True, **kw)
+        _, m_ref = ref(x, t_measure=t * 5, return_metadata=True)
+        out, m_plain = plain(x, t_measure=t * 5, return_metadata=True)
+        E = torch.exp(-plain.sde_params()["mu"] * (t[:, :, None] - t[:, None, :]).abs()[..., None] * 5)
+        close(m_plain["attn_mat"], m_ref["attn_mat"] * E, 1e-10)
+        assert (m_plain["attn_mat"].sum(2) <= 1 + 1e-12).all()
+        out.square().mean().backward()
+        assert torch.isfinite(out).all() and all(p.grad is None or torch.isfinite(p.grad).all()
+                                                 for p in plain.parameters())
+        with torch.no_grad():
+            plain.log_c.fill_(-40.0)
+        close(plain(x, t_measure=t * 5, return_metadata=True)[1]["attn_mat"].sum(2), 1.0, 1e-10)
+
+
 def test_rfa_null_slot():
     """RFA with the proximal prior (prior="tokens"): a vanishing c_h recovers RFA's innovation output, and with full
     inflation (zeta -> 1, h = 1) DKA with the same null slot equals it exactly (tau = 1, no floor)."""

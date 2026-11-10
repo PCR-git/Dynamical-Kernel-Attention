@@ -230,6 +230,9 @@ class DKAConfig:
     # Zero decay: mu = 0 in every head (rotation only, E = h = 1), keeping the forcing sigma^2 = 2 mu_h v_inf of each
     # head's coupled decay, so Sigma_n = eta^2 + sigma^2 dt grows linearly with lag (a random walk, not stationary)
     zero_decay: bool = False
+    # Plain values: each key's estimate is U v_j itself instead of the unbiased U v_j / E (weight A E^2 on U v_j
+    # instead of A E), so the weights on the values sum to at most one, as in softmax attention (the polar value path)
+    plain_values: bool = False
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -304,6 +307,7 @@ class DKAConfig:
             polar_forcing=getattr(args, "dka_polar_forcing", "constant"),
             flat_precision=getattr(args, "dka_flat_precision", False),
             zero_decay=getattr(args, "dka_zero_decay", False),
+            plain_values=getattr(args, "dka_plain_values", False),
             epsilon=args.epsilon,
         )
 
