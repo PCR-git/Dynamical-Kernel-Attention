@@ -72,7 +72,7 @@ def main():
     L = cli.length
     input_ids = test_blocks("wikitext103", tokenizer, L, cli.data_dir, 4)[0][None]
     run = cli.name if os.path.isdir(cli.name) else latest_run(cli.name)
-    name = os.path.basename(os.path.normpath(run)).split("__")[0]
+    name = os.path.basename(os.path.normpath(run)).split("__")[0].replace(".", "-")   # LaTeX: one dot only
     model, _ = load_model(run, torch.device("cpu"))
     A, null, horizon = last_layer(model, input_ids)
     out_dir = os.path.join(IMAGES, "attn_mats")
