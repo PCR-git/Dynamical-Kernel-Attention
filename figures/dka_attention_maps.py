@@ -27,23 +27,27 @@ from dka.training.lm_data import load_tokenizer
 
 @torch.no_grad()
 def last_layer(model, input_ids):
-    """Weights [H, N, N], null share [H, N] and horizons 1/mu [H] of the last block."""
+    """Weights [H, N, N] of the last block; for DKA also the null share [H, N] and horizons 1/mu [H] (else None)."""
     _, infos = model(input_ids, causal=True, return_metadata=True)
     info = infos[-1]
+    if "null_share" not in info:                                       # baseline: softmax weights [B, H, N, N]
+        return info["attn_mat"][0].float().numpy(), None, None
     A = info["attn_mat"][0].permute(2, 0, 1).float().numpy()
     null = info["null_share"][0].T.float().numpy()
     return A, null, 1 / info["mu_v"].float().numpy()
 
 
 def plot(A, null, horizon, start, end, path):
-    fig, axes = plt.subplots(2, 4, figsize=(22, 11.5), layout="constrained")
+    fig, axes = plt.subplots(2, 4, figsize=(22, 11.5) if null is not None else (20, 10.5), layout="constrained")
     q = np.arange(start, end)
     for k, ax in enumerate(axes.flat):
         ax.imshow(A[k, start:end, start:end], cmap="magma", norm=PowerNorm(gamma=0.2, vmin=0, vmax=A[k].max()),
                   extent=(start, end, end, start), interpolation="antialiased", interpolation_stage="data")
-        ax.set_title(f"horizon {horizon[k]:.3g} tokens", fontsize=18)
+        ax.set_title(f"horizon {horizon[k]:.3g} tokens" if horizon is not None else f"Head {k + 1}", fontsize=18)
         ax.set_xticks([])
         ax.set_yticks([])
+        if null is None:
+            continue
         side = make_axes_locatable(ax).append_axes("right", size="12%", pad=0.08)
         side.plot(null[k, start:end], q, color="#0072B2", lw=0.6)
         side.set_ylim(end, start)
@@ -58,7 +62,7 @@ def plot(A, null, horizon, start, end, path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("name", nargs="?", default="D3.b1.r1e4")
+    p.add_argument("name", nargs="?", default="D3.b1.r1e4", help="run name in $DKA_RUNS_DIR, or a run directory")
     p.add_argument("--length", type=int, default=4096)
     p.add_argument("--zoom", type=int, default=None, help="also plot queries and keys from here to the end")
     p.add_argument("--data-dir", default=os.path.join(REPO, "datasets"))
@@ -67,15 +71,18 @@ def main():
     tokenizer = load_tokenizer(os.path.join(REPO, "gpt2_tokenizer"))
     L = cli.length
     input_ids = test_blocks("wikitext103", tokenizer, L, cli.data_dir, 4)[0][None]
-    model, _ = load_model(latest_run(cli.name), torch.device("cpu"))
+    run = cli.name if os.path.isdir(cli.name) else latest_run(cli.name)
+    name = os.path.basename(os.path.normpath(run)).split("__")[0]
+    model, _ = load_model(run, torch.device("cpu"))
     A, null, horizon = last_layer(model, input_ids)
     out_dir = os.path.join(IMAGES, "attn_mats")
     os.makedirs(out_dir, exist_ok=True)
     for start in [0] + ([cli.zoom] if cli.zoom is not None else []):
-        path = os.path.join(out_dir, f"dka_attn_{cli.name}_{start}_to_{L}.png")
+        path = os.path.join(out_dir, f"dka_attn_{name}_{start}_to_{L}.png")
         plot(A, null, horizon, start, L, path)
         print("saved", path)
-    print("mean null share per head:", np.round(null.mean(1), 3))
+    if null is not None:
+        print("mean null share per head:", np.round(null.mean(1), 3))
 
 
 if __name__ == "__main__":
