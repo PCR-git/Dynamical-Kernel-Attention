@@ -238,10 +238,11 @@ class DKAConfig:
     # learned from alpha_h = 0 (exactly DKA at the start; a_h > -1 keeps the noise positive). First layer: s = 0
     key_evidence: bool = False
     # Test scale: "sigma_n" tests the residual against its full variance Sigma_n (the paper); "measurement" tests it
-    # against the measurement noise eta^2 alone, w(R^2 / (nu eta^2)), while the influence keeps 1/Sigma_n. A selective
-    # (redescending) weight with a test scale that grows with lag favors distant keys with large residuals; here a
-    # distant key must match as well as a near one, and counts for less if it does
-    test_scale: Literal["sigma_n", "measurement"] = "sigma_n"
+    # against the measurement noise eta^2 alone, w(R^2 / (nu eta^2)), while the influence keeps 1/Sigma_n; "split"
+    # tests it against Sigma_test = v_inf,test (1 - E^2) + eta^2 with its own forcing, initialized equal to the
+    # influence's (exactly DKA at the start; v_inf,test = 0 is "measurement"). A selective (redescending) weight with a
+    # test scale that grows with lag favors distant keys with large residuals
+    test_scale: Literal["sigma_n", "measurement", "split"] = "sigma_n"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -257,8 +258,10 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
-        if self.test_scale == "measurement" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")):
-            raise ValueError("test_scale='measurement' needs weight='robust' and a Euclidean or dot-product residual")
+        if self.test_scale != "sigma_n" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")
+                                             or self.inflation is not None or self.flat_precision):
+            raise ValueError(f"test_scale={self.test_scale!r} needs weight='robust', a Euclidean or dot-product "
+                             "residual, no inflation and no flat precision")
         if self.key_evidence and (self.residual == "polar_obs" or self.inflation is not None):
             raise ValueError("key_evidence needs Sigma_n = forcing + eta^2 (no polar_obs, no inflation)")
         if self.residual == "polar_obs" and (self.inflation is not None or self.weight != "robust"

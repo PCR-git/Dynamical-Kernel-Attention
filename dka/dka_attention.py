@@ -87,6 +87,8 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             sigma_init = inv_softplus(torch.full((H,), c.init_steady_state_var))
         self.sigma_raw = nn.Parameter(sigma_init)
+        # test_scale='split': the test's own forcing, parameterized as sigma_raw and starting equal to it
+        self.sigma_test_raw = nn.Parameter(sigma_init.clone()) if c.test_scale == "split" else None
         self.eta_raw = nn.Parameter(inv_softplus(torch.full((H,), c.init_measurement_var)))
         self.nu_raw = nn.Parameter(torch.full((H,), c.init_nu_over_d))
         # rho^2: measurement noise in proportion to the magnitude (polar_obs), sigma_t^2 = eta^2 + rho^2 m^2
@@ -152,8 +154,10 @@ class MultiheadIsotropicDKA(nn.Module):
         c = self.config
         mu = self.mu
         omega = c.omega_rescale * torch.stack([self.omega, -self.omega], dim=-1).flatten(-2)
-        learned = F.softplus(self.sigma_raw)
-        sigma_sq = learned if c.process_noise == "variance" else torch.where(mu > 0, 2 * mu * learned, learned)
+        forcing = lambda raw: (F.softplus(raw) if c.process_noise == "variance"
+                               else torch.where(mu > 0, 2 * mu * F.softplus(raw), F.softplus(raw)))
+        sigma_sq = forcing(self.sigma_raw)
+        sigma_sq_test = None if self.sigma_test_raw is None else forcing(self.sigma_test_raw)
         eta_sq = F.softplus(self.eta_raw) + c.epsilon
         nu = c.head_dim * F.softplus(self.nu_raw) + 2.0 + c.epsilon
         if c.prior == "tokens":
@@ -168,7 +172,8 @@ class MultiheadIsotropicDKA(nn.Module):
         log_saturation = None if self.log_n_sat is None else self.log_n_sat - torch.log(eta_sq)
         rho_sq = None if self.rho_raw is None else F.softplus(self.rho_raw)
         return dict(mu=mu, omega=omega, sigma_sq=sigma_sq, eta_sq=eta_sq, nu=nu, theta=self.theta, rho_sq=rho_sq,
-                    log_prior_precision=log_prior_precision, log_saturation=log_saturation)
+                    log_prior_precision=log_prior_precision, log_saturation=log_saturation,
+                    sigma_sq_test=sigma_sq_test)
 
     def _project_in(self, W, Z):
         B, N, _ = Z.shape
@@ -279,9 +284,14 @@ class MultiheadIsotropicDKA(nn.Module):
             Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
             K_sq = K.pow(2).sum(dim=(-1, -2))[:, None]
             logits = mixture_logits(R_sq, K_sq, Sigma, Sigma_inf, c.head_dim, self.beta, tau)
-        elif c.test_scale == "measurement":   # match tested at the key's own noise eta^2, influence from 1/Sigma_n
-            eta_sq = p["eta_sq"].expand_as(Sigma)
-            content = robust_logits(R_sq, eta_sq, p["nu"], c.head_dim, c.robust_weight) + torch.log(eta_sq)
+        elif c.test_scale != "sigma_n":      # match tested at its own scale, influence from 1/Sigma_n
+            if c.test_scale == "measurement":                                   # Sigma_test = eta^2
+                Sigma_test = p["eta_sq"].expand_as(Sigma)
+            else:                                                               # its own forcing
+                Sigma_test = dka_covariance(p["mu"], p["sigma_sq_test"], p["eta_sq"], lags)
+            if d_eta is not None:
+                Sigma_test = Sigma_test + d_eta
+            content = robust_logits(R_sq, Sigma_test, p["nu"], c.head_dim, c.robust_weight) + torch.log(Sigma_test)
             logits = (content if tau is None else tau * content) - torch.log(Sigma)
         else:
             logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
@@ -333,6 +343,9 @@ class MultiheadIsotropicDKA(nn.Module):
             "mu_v": mu, "sigma_sq_v": p["sigma_sq"], "sigma_tilde_sq_v": v_inf, "eta_sq_v": p["eta_sq"],
             "gamma_sq_v": torch.exp(-p["log_prior_precision"]), "nu_over_d": p["nu"] / self.config.head_dim,
         }
+        if p["sigma_sq_test"] is not None:          # both forcings, logged for every block during training
+            summary["v_inf_all"] = v_inf
+            summary["v_inf_test_all"] = p["sigma_sq_test"] / (2 * mu).clamp_min(1e-12)
         if self.config.prior in ("tokens", "window"):
             summary["prior_weight"] = torch.exp(self.log_c)
         if p["theta"] is not None:

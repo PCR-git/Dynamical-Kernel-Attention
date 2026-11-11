@@ -494,6 +494,40 @@ def test_measurement_test_scale():
         assert (a[1] < a[0]) == falls, test_scale
 
 
+def test_split_test_scale():
+    """test_scale='split': the test's own forcing starts equal to the influence's, so the layer starts as DKA; with
+    no test forcing it is test_scale='measurement'; in general the logits are -log Sigma_n - tau kappa
+    log(1 + R^2 / (nu Sigma_test)), Sigma_test = v_inf,test (1 - E^2) + eta^2 (checked from the layer's Q and K)."""
+    from dka.kernels import dka_covariance, dka_residual_norm_sq
+    x, t = inputs(N=8)
+    ref, split, meas = make_layer(), make_layer(test_scale="split"), make_layer(test_scale="measurement")
+    with torch.no_grad():                       # make_layer randomizes sigma_raw after the test forcing copied it
+        split.sigma_test_raw.copy_(split.sigma_raw)
+    close(split(x, t_measure=t)[0], ref(x, t_measure=t)[0], 1e-12)
+    with torch.no_grad():
+        split.sigma_test_raw.fill_(-60.0)
+    close(split(x, t_measure=t)[0], meas(x, t_measure=t)[0], 1e-12)
+    with torch.no_grad():
+        split.sigma_test_raw.copy_(torch.tensor([1.5, -0.5, 0.7], dtype=F64))
+    out, meta = split(x, t_measure=t, return_metadata=True)
+    with torch.no_grad():
+        p = split.sde_params()
+        cos, sin = rotation_angles(p["omega"], t)
+        Q = rotate(split._project_in(split.W_q, x), cos, -sin)
+        K = rotate(split._project_in(split.W_k, x), cos, -sin)
+        lags = (t[:, :, None] - t[:, None, :]).abs()[..., None]
+        E = torch.exp(-p["mu"] * lags)
+        Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags)
+        Sigma_test = dka_covariance(p["mu"], p["sigma_sq_test"], p["eta_sq"], lags)
+        R_sq = dka_residual_norm_sq(Q, K, E, E * E)
+        logits = -torch.log(Sigma) - (p["nu"] + D) / D * torch.log1p(R_sq / (p["nu"] * Sigma_test))
+        A = torch.exp(logits).masked_fill(~torch.ones(8, 8, dtype=torch.bool).tril()[None, :, :, None], 0)
+        null = torch.exp(p["log_prior_precision"])
+        close(meta["attn_mat"], A * E / (null + (A * E * E).sum(2, keepdim=True)), 1e-10)
+    out.square().mean().backward()
+    assert torch.isfinite(split.sigma_test_raw.grad).all() and (split.sigma_test_raw.grad != 0).any()
+
+
 def test_key_evidence():
     """key_evidence: with alpha = 0 the layer is DKA whatever the previous layer's share; with a = e^alpha - 1 and a
     constant share s, every key's noise is eta^2 / (1 + a s), which equals a plain layer with eta^2 scaled by

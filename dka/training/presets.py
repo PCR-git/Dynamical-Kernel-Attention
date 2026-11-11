@@ -238,6 +238,7 @@ PRESETS = {
 #   .plain    plain values: weight A E^2 on U v_j instead of A E (estimate U v_j, not U v_j / E), weights sum <= 1
 #   .plain.dot.noE  .dot.noE with plain values
 #   .mtest    the match tested against the measurement noise eta^2 alone, influence 1/Sigma_n (test_scale)
+#   .stest    the match tested against its own Sigma_test with a separate forcing, starting equal to DKA's
 # plus the RFA twin with the null slot (M3.<b>.r1e4.null) and the endpoints without the noise model: B5 (rotations
 # and the coupled linear bias 2 mu_h), B10 (B5 + softmax plus one), and B10 with the slopes scaled by 0.5 and 2.
 _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "noT": dict(dka_temperature=False),
@@ -250,7 +251,7 @@ _ABLATIONS = {"N": dict(dka_prior="none"), "est": dict(dka_output="estimate"), "
               "dot": dict(use_robust_weight=False, dka_residual="dot"),
               "dot.noE": dict(use_robust_weight=False, dka_residual="dot_noE"),
               "plain": dict(dka_plain_values=True),
-              "mtest": dict(dka_test_scale="measurement"),
+              "mtest": dict(dka_test_scale="measurement"), "stest": dict(dka_test_scale="split"),
               "plain.dot.noE": dict(use_robust_weight=False, dka_residual="dot_noE", dka_plain_values=True),
               "polar.const": dict(dka_residual="polar_obs", dka_polar_forcing="constant"),
               "polar.mag": dict(dka_residual="polar_obs", dka_polar_forcing="magnitude")}
