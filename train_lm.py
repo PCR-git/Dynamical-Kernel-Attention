@@ -66,9 +66,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", choices=DATASETS, required=True)
     p.add_argument("--preset", choices=sorted(PRESETS), required=True)
-    p.add_argument("--epochs", type=int, default=15)
+    p.add_argument("--epochs", type=int, default=None, help="default: the preset's train_epochs, else 15")
     p.add_argument("--batch-size", type=int, default=16)
-    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr", type=float, default=None, help="default: the preset's train_lr, else 1e-3")
     p.add_argument("--compile", action="store_true", help="torch.compile the backbone (needs Triton; ~1.8x faster RFA)")
     p.add_argument("--grad-checkpointing", action="store_true", help="trade ~30%% speed for much less memory")
     p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published N(0,1)")
@@ -77,6 +77,9 @@ def main():
                    help="PG-19: train on this many tokens (e.g. 2e9), a fixed random subset of the blocks, "
                         "split into --epochs parts; default one full pass (3.07B)")
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override fields of args")
+    p.add_argument("--init-from", default=None, help="start from the weights of a trained run (run name in "
+                   "<out-dir>/<dataset>, run directory or .pt; new parameters keep their init); default: the "
+                   "preset's init_from")
     p.add_argument("--resume", default=None, help="resume.pt of an unfinished run (continues in its directory)")
     p.add_argument("--name", default=None, help="run directory name (default <backbone>__<preset>)")
     p.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
@@ -90,11 +93,15 @@ def main():
     device = torch.device(f"cuda:{cli.gpu}" if torch.cuda.is_available() else "cpu")
     args = make_args(cli.preset, device=device, batch_size=cli.batch_size, grad_checkpointing=cli.grad_checkpointing,
                      **parse_overrides(cli.set))
+    # presets may carry their own schedule (fine-tunes from a trained run); the command line takes precedence
+    epochs = cli.epochs or getattr(args, "train_epochs", None) or 15
+    lr = cli.lr or getattr(args, "train_lr", None) or 1e-3
+    init_from = cli.init_from or getattr(args, "init_from", None)
 
     # --- Data ---
     tokenizer = load_tokenizer()
     if cli.dataset == "pg19":   # one pass over the books (or --max-tokens of them), split into --epochs parts
-        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, cli.epochs, cli.data_dir,
+        loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, epochs, cli.data_dir,
                                         max_tokens=cli.max_tokens)
     elif cli.max_tokens is not None:
         raise ValueError("--max-tokens applies to --dataset pg19 only")
@@ -110,12 +117,27 @@ def main():
     # --- Model, optimizer, schedule ---
     model = build_language_model(args, embed_init_std=0.02 if cli.small_embed_init else None).to(device)
     print(f"{cli.preset}: {type(model.backbone).__name__}, {count_parameters(model):,} parameters")
+    if init_from and not cli.resume:
+        path = init_from
+        if not path.endswith(".pt"):
+            if not os.path.isdir(path):
+                runs = sorted(glob.glob(os.path.join(cli.out_dir, cli.dataset, f"{init_from}__*")))
+                if not runs:
+                    raise FileNotFoundError(f"--init-from {init_from}: no run in {os.path.join(cli.out_dir, cli.dataset)}")
+                path = runs[-1]
+            path = max(glob.glob(os.path.join(path, "lm_epoch_*.pt")),
+                       key=lambda f: int(f.rsplit("_", 1)[1].split(".")[0]))
+        state = torch.load(path, map_location=device, weights_only=False)["model_state_dict"]
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if unexpected:
+            raise ValueError(f"--init-from {path}: parameters not in this model: {unexpected}")
+        print(f"Initialized from {path}; new parameters: {missing}")
     if cli.compile:
         model.backbone.compile()  # in place, so checkpoint keys are unchanged (first steps include compile time)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cli.lr, betas=(0.9, 0.999), eps=1e-8)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-8)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=cli.lr, epochs=cli.epochs, steps_per_epoch=len(loaders["train"]) + 2,
+        optimizer, max_lr=lr, epochs=epochs, steps_per_epoch=len(loaders["train"]) + 2,
         pct_start=0.05, anneal_strategy="cos", div_factor=25.0, final_div_factor=1000.0)
 
     history = {"loss": [], "train_loss": [], "val_loss": [], "val_ppl": [], "epoch_times": []}
@@ -124,7 +146,7 @@ def main():
         ckpt = torch.load(cli.resume, map_location=device, weights_only=False)
         if "optimizer_state_dict" not in ckpt:
             raise ValueError(f"{cli.resume} holds only model weights; resume from the run's resume.pt")
-        if ckpt.get("total_epochs", cli.epochs) != cli.epochs:
+        if ckpt.get("total_epochs", epochs) != epochs:
             raise ValueError(f"Checkpoint is from a {ckpt['total_epochs']}-epoch run; resume with --epochs "
                              f"{ckpt['total_epochs']} (the one-cycle LR schedule cannot be extended).")
         model.load_state_dict(ckpt["model_state_dict"])
@@ -146,7 +168,7 @@ def main():
     header = f"{cli.dataset} {cli.preset} | python train_lm.py {' '.join(sys.argv[1:])}"
 
     # --- Training ---
-    for epoch in range(start_epoch, cli.epochs):
+    for epoch in range(start_epoch, epochs):
         t0 = time.time()
         _, history = single_epoch_lm(model, loaders["train"], history, optimizer, args, scheduler=scheduler)
         history["epoch_times"].append(time.time() - t0)
@@ -156,15 +178,15 @@ def main():
         val_loss, val_ppl = evaluate_lm(model, loaders["validation"], args)
         history["val_loss"].append(val_loss)
         history["val_ppl"].append(val_ppl)
-        print(f"Epoch {epoch + 1}/{cli.epochs} | train loss {history['train_loss'][-1]:.4f} | "
+        print(f"Epoch {epoch + 1}/{epochs} | train loss {history['train_loss'][-1]:.4f} | "
               f"val loss {val_loss:.4f} | val ppl {val_ppl:.2f} | {history['epoch_times'][-1]:.0f}s")
 
-        ckpt = {"epoch": epoch, "total_epochs": cli.epochs, "model_state_dict": model.state_dict(),
+        ckpt = {"epoch": epoch, "total_epochs": epochs, "model_state_dict": model.state_dict(),
                 "history": history, "args": args}
         torch.save(ckpt, os.path.join(run_dir, f"lm_epoch_{epoch + 1}.pt"))
         for old in sorted(glob.glob(os.path.join(run_dir, "lm_epoch_*.pt")), key=os.path.getmtime)[:-2]:
             os.remove(old)  # keep the two most recent epochs
-        if epoch + 1 < cli.epochs:  # written to a temporary file first, so a crash never leaves a broken resume.pt
+        if epoch + 1 < epochs:  # written to a temporary file first, so a crash never leaves a broken resume.pt
             torch.save({**ckpt, "optimizer_state_dict": optimizer.state_dict(),
                         "scheduler_state_dict": scheduler.state_dict()}, resume_path + ".tmp")
             os.replace(resume_path + ".tmp", resume_path)

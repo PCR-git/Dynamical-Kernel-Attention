@@ -260,6 +260,11 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
                                                     rfa_output="innovation", rfa_prior="tokens"))
     PRESETS.setdefault(f"M3.{_tag}.r1e4.I", dict(_SC, damping=_b, zero_frac=0.0, target_ss_process_var=0.5,
                                                  rfa_output="innovation"))           # RFA in innovation form
+    # Fine-tunes of the trained D3.<b>.r1e4 for 2 epochs at peak lr 1e-4: .keyS.ft carries each layer's evidence
+    # share into the next layer's key noise (key_evidence, starting exactly at DKA); .ft is the control
+    _ft = dict(init_from=f"D3.{_tag}.r1e4", train_epochs=2, train_lr=1e-4)
+    PRESETS.setdefault(f"D3.{_tag}.r1e4.ft", dict(_full, **_ft))
+    PRESETS.setdefault(f"D3.{_tag}.r1e4.keyS.ft", dict(_full, dka_key_evidence=True, **_ft))
     _b5 = dict(use_rope=False, use_alibi=False, use_sc_linear_bias=True, use_SC_RoPE=True, damping=_b)
     PRESETS.setdefault(f"B5.{_tag}.r1e4", _b5)
     PRESETS.setdefault(f"B10.{_tag}.r1e4", dict(_b5, use_softmax_one=True))

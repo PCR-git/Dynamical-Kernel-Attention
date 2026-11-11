@@ -123,6 +123,9 @@ class MultiheadIsotropicDKA(nn.Module):
         # --- Inverse temperature on the content term of the logits (not on -log Sigma or the null slot) ---
         self.log_tau = nn.Parameter(torch.zeros(H)) if c.temperature else None
 
+        # --- Key evidence: a_h = e^{alpha_h} - 1 scales the previous layer's evidence share into each key's noise ---
+        self.key_evidence_alpha = nn.Parameter(torch.zeros(H)) if c.key_evidence else None
+
         # --- Contamination model: beta_h = logit of the prior probability of relevance ---
         self.beta = nn.Parameter(torch.full((H,), c.init_relevance_logit)) if c.weight == "mixture" else None
 
@@ -171,17 +174,18 @@ class MultiheadIsotropicDKA(nn.Module):
         B, N, _ = Z.shape
         return W(Z).view(B, N, 2, self.config.n_heads, self.config.head_dim).permute(0, 1, 3, 4, 2)
 
-    def forward(self, Z_q, Z_k=None, Z_v=None, t_measure=None, causal=True, return_metadata=False):
+    def forward(self, Z_q, Z_k=None, Z_v=None, t_measure=None, causal=True, return_metadata=False, key_share=None):
         """
         Args:
             Z_q, Z_k, Z_v: real inputs [B, N, d_model] (Z_k, Z_v default to Z_q).
             t_measure:     observation times [B, N]; None means regular positions 0..N-1.
             causal:        restrict attention to j <= i.
             return_metadata: also return attention weights, evidence and other diagnostics.
+            key_share:     the previous layer's evidence share [B, N, H] (config.key_evidence; None = zero).
 
         Returns:
             out [B, N, d_model] = W_o dV (to be added to the residual stream), and a dict with the per-head
-            parameters (plus diagnostics if return_metadata).
+            parameters (plus diagnostics if return_metadata; with key_evidence, "share" [B, N, H] for the next layer).
         """
         c = self.config
         Z_k = Z_q if Z_k is None else Z_k
@@ -205,9 +209,15 @@ class MultiheadIsotropicDKA(nn.Module):
         V = self._project_in(self.W_v, Z_v)          # current estimate, in its own frame
         V_rot = rotate(V, cos, -sin) if c.rotate_values else V
 
+        # --- Key evidence: eta_j^2 = eta^2 / (1 + a_h s_j), added to Sigma_n as its change from eta^2 ---
+        d_eta = None
+        if self.key_evidence_alpha is not None and key_share is not None:
+            a = torch.expm1(self.key_evidence_alpha)
+            d_eta = (p["eta_sq"] / (1 + a * key_share) - p["eta_sq"])[:, None]   # [B, 1, N, H]
+
         # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
         chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
-        rows = [self._rows(p, t, Q, K, V, V_rot, cos, sin, i0, min(i0 + chunk, N), causal)
+        rows = [self._rows(p, t, Q, K, V, V_rot, cos, sin, i0, min(i0 + chunk, N), causal, d_eta)
                 for i0 in range(0, N, chunk)]
         dV = torch.cat([r[0] for r in rows], dim=1)
         S_eff = torch.cat([r[4] for r in rows], dim=1)
@@ -218,13 +228,16 @@ class MultiheadIsotropicDKA(nn.Module):
 
         info = self._param_summary(p)
         info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
+        if c.key_evidence:
+            info["share"] = S_eff / denom                                       # for the next layer's keys
         if return_metadata:
             _, A_hat, null, S, _, m, _ = rows[0]
             info.update(self._metadata(p, A_hat, null, S, S_eff, m, denom, dV))
         return out, info
 
-    def _rows(self, p, t, Q, K, V, V_rot, cos, sin, i0, i1, causal):
-        """The update of queries i0..i1-1 against all keys: (dV, A_hat, null, S, S_eff, m, denom), rows i0..i1-1."""
+    def _rows(self, p, t, Q, K, V, V_rot, cos, sin, i0, i1, causal, d_eta=None):
+        """The update of queries i0..i1-1 against all keys: (dV, A_hat, null, S, S_eff, m, denom), rows i0..i1-1.
+        d_eta [B, 1, N, H]: each key's change of measurement noise (key_evidence), or None."""
         c = self.config
         N = K.shape[1]
 
@@ -237,6 +250,8 @@ class MultiheadIsotropicDKA(nn.Module):
             Sigma = p["eta_sq"].expand_as(E)
         else:
             Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags, c_noise)
+        if d_eta is not None:                                                   # key evidence: per-key eta_j^2
+            Sigma = Sigma + d_eta
 
         if c.residual == "polar_obs":            # tangential noise Sigma_{n,t} = eta^2 + rho^2 m_j^2 + forcing
             k_sq = K.pow(2).sum(dim=(-1, -2))[:, None]                          # m_j^2 [B, 1, N, H]

@@ -459,6 +459,43 @@ def test_plain_values():
         close(plain(x, t_measure=t * 5, return_metadata=True)[1]["attn_mat"].sum(2), 1.0, 1e-10)
 
 
+def test_key_evidence():
+    """key_evidence: with alpha = 0 the layer is DKA whatever the previous layer's share; with a = e^alpha - 1 and a
+    constant share s, every key's noise is eta^2 / (1 + a s), which equals a plain layer with eta^2 scaled by
+    1 / (1 + a s) and c_h scaled the same way (so that the null slot c_h / eta^2 is unchanged)."""
+    x, t = inputs(N=8)
+    ref, ke = make_layer(), make_layer(key_evidence=True)
+    share = torch.rand(x.shape[0], 8, H, dtype=F64)
+    close(ke(x, t_measure=t, key_share=share)[0], ref(x, t_measure=t)[0], 1e-12)
+    a, s = 0.7, 0.4
+    with torch.no_grad():
+        ke.key_evidence_alpha.fill_(math.log1p(a))
+        p = ref.sde_params()
+        eta_new = p["eta_sq"] / (1 + a * s)
+        ref.eta_raw.copy_(eta_new - ref.config.epsilon + torch.log(-torch.expm1(-(eta_new - ref.config.epsilon))))
+        ref.log_c.sub_(math.log1p(a * s))
+    out = ke(x, t_measure=t, key_share=torch.full_like(share, s))[0]
+    close(out, ref(x, t_measure=t)[0], 1e-10)
+    out.square().mean().backward()
+    assert torch.isfinite(ke.key_evidence_alpha.grad).all() and (ke.key_evidence_alpha.grad != 0).any()
+
+
+def test_key_evidence_model():
+    """The model passes each layer's share to the next; with alpha = 0 its logits equal DKA's with the same weights."""
+    from dka.training.presets import make_args, build_language_model
+    torch.manual_seed(0)
+    small = dict(device="cpu", batch_size=1, num_blocks=2, seq_len=16)
+    base = build_language_model(make_args("D3.b1.r1e4", **small)).double()
+    ke = build_language_model(make_args("D3.b1.r1e4.keyS.ft", **small)).double()
+    missing, unexpected = ke.load_state_dict(base.state_dict(), strict=False)
+    assert not unexpected and all(k.endswith("key_evidence_alpha") for k in missing) and len(missing) == 2
+    ids = torch.randint(0, 100, (2, 16))
+    close(ke(ids)[0], base(ids)[0], 1e-10)
+    with torch.no_grad():
+        ke.backbone.blocks[1].attn.key_evidence_alpha.fill_(1.0)
+    assert (ke(ids)[0] - base(ids)[0]).abs().max() > 1e-6       # the second layer now reads the first's share
+
+
 def test_b1_equivalence():
     """DKA reduces exactly to RoPE attention (B1) with zero decay (E = h = 1), flat precision, the dot-product score
     without attenuation, the exponential weight, no null slot, the estimate output and no value rotation. DKA's

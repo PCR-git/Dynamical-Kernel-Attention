@@ -233,6 +233,10 @@ class DKAConfig:
     # Plain values: each key's estimate is U v_j itself instead of the unbiased U v_j / E (weight A E^2 on U v_j
     # instead of A E), so the weights on the values sum to at most one, as in softmax attention (the polar value path)
     plain_values: bool = False
+    # Key evidence: each key's measurement noise takes the previous layer's evidence share s_j = S_j / (gamma^-2 +
+    # S_j) of the head with the same index (same horizon), eta_j^2 = eta^2 / (1 + a_h s_j), a_h = e^{alpha_h} - 1
+    # learned from alpha_h = 0 (exactly DKA at the start; a_h > -1 keeps the noise positive). First layer: s = 0
+    key_evidence: bool = False
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -248,6 +252,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.key_evidence and (self.residual == "polar_obs" or self.inflation is not None):
+            raise ValueError("key_evidence needs Sigma_n = forcing + eta^2 (no polar_obs, no inflation)")
         if self.residual == "polar_obs" and (self.inflation is not None or self.weight != "robust"
                                              or self.prior not in ("tokens", "none")):
             raise ValueError("residual='polar_obs' needs no inflation, weight='robust' and prior 'tokens' or 'none'")
@@ -308,6 +314,7 @@ class DKAConfig:
             flat_precision=getattr(args, "dka_flat_precision", False),
             zero_decay=getattr(args, "dka_zero_decay", False),
             plain_values=getattr(args, "dka_plain_values", False),
+            key_evidence=getattr(args, "dka_key_evidence", False),
             epsilon=args.epsilon,
         )
 

@@ -40,11 +40,14 @@ class Backbone(nn.Module):
         """
         x = self.input_proj(x)
         infos = []
+        share = None                       # DKA key_evidence: each layer's evidence share feeds the next layer's keys
         for block in self.blocks:
             if self.training and self.grad_checkpointing:
-                x, info = checkpoint(block, x, t_measure, causal, return_metadata, use_reentrant=False)
+                x, info = checkpoint(block, x, t_measure, causal, return_metadata, share, use_reentrant=False)
             else:
-                x, info = block(x, t_measure=t_measure, causal=causal, return_metadata=return_metadata)
+                x, info = block(x, t_measure=t_measure, causal=causal, return_metadata=return_metadata,
+                                key_share=share)
+            share = info.pop("share", None) if isinstance(info, dict) else None
             infos.append(info)
         if self.final_norm is not None:
             x = self.final_norm(x)

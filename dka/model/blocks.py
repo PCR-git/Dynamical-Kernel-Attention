@@ -33,10 +33,12 @@ class Block(nn.Module):
         self.norm2 = norm(d) if norm and config.ffn_norm else None
         self.ffn = nn.Sequential(nn.Linear(d, config.ffn_dim), nn.ReLU(), nn.Linear(config.ffn_dim, d))
 
-    def forward(self, x, t_measure=None, causal=True, return_metadata=False):
-        """x: [B, N, d_model]. Returns (out [B, N, d_model], the attention layer's info dict)."""
+    def forward(self, x, t_measure=None, causal=True, return_metadata=False, key_share=None):
+        """x: [B, N, d_model]; key_share: the previous DKA layer's evidence share (key_evidence) or None.
+        Returns (out [B, N, d_model], the attention layer's info dict)."""
         h = x if self.norm1 is None else self.norm1(x)
-        attn_out, info = self.attn(h, t_measure=t_measure, causal=causal, return_metadata=return_metadata)
+        extra = {} if key_share is None else {"key_share": key_share}
+        attn_out, info = self.attn(h, t_measure=t_measure, causal=causal, return_metadata=return_metadata, **extra)
         x = x + attn_out
         h = x if self.norm2 is None else self.norm2(x)
         return x + self.ffn(h), info
