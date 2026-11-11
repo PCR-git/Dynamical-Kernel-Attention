@@ -85,14 +85,14 @@ def main():
     p.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     p.add_argument("--data-dir", default="datasets")
     p.add_argument("--num-proc", type=int, default=4, help="processes for tokenization")
-    p.add_argument("--seed", type=int, default=2025)
+    p.add_argument("--seed", type=int, default=None, help="default: the preset's train_seed, else 2025")
     p.add_argument("--gpu", type=int, default=0)
     cli = p.parse_args()
 
-    seed_everything(cli.seed)
     device = torch.device(f"cuda:{cli.gpu}" if torch.cuda.is_available() else "cpu")
     args = make_args(cli.preset, device=device, batch_size=cli.batch_size, grad_checkpointing=cli.grad_checkpointing,
                      **parse_overrides(cli.set))
+    seed_everything(cli.seed if cli.seed is not None else getattr(args, "train_seed", 2025))
     # presets may carry their own schedule (fine-tunes from a trained run); the command line takes precedence
     epochs = cli.epochs or getattr(args, "train_epochs", None) or 15
     lr = cli.lr or getattr(args, "train_lr", None) or 1e-3

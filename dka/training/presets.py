@@ -275,6 +275,11 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     for _x, _s in (("x05", 0.5), ("x2", 2.0)):
         PRESETS.setdefault(f"B10.{_tag}.r1e4.{_x}", dict(_b5, use_softmax_one=True, bias_slope_scale=_s))
 
+# More seeds of the headline models (the published runs use seed 2025): <preset>.s2 and .s3 train with 2026 and 2027
+for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
+    for _k, _seed in (("s2", 2026), ("s3", 2027)):
+        PRESETS.setdefault(f"{_base}.{_k}", dict(PRESETS[_base], train_seed=_seed))
+
 
 def make_args(preset, **overrides):
     """Namespace of BASE_ARGS, updated with PRESETS[preset], then with `overrides`."""
