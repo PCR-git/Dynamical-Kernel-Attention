@@ -237,6 +237,11 @@ class DKAConfig:
     # S_j) of the head with the same index (same horizon), eta_j^2 = eta^2 / (1 + a_h s_j), a_h = e^{alpha_h} - 1
     # learned from alpha_h = 0 (exactly DKA at the start; a_h > -1 keeps the noise positive). First layer: s = 0
     key_evidence: bool = False
+    # Test scale: "sigma_n" tests the residual against its full variance Sigma_n (the paper); "measurement" tests it
+    # against the measurement noise eta^2 alone, w(R^2 / (nu eta^2)), while the influence keeps 1/Sigma_n. A selective
+    # (redescending) weight with a test scale that grows with lag favors distant keys with large residuals; here a
+    # distant key must match as well as a near one, and counts for less if it does
+    test_scale: Literal["sigma_n", "measurement"] = "sigma_n"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -252,6 +257,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.test_scale == "measurement" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")):
+            raise ValueError("test_scale='measurement' needs weight='robust' and a Euclidean or dot-product residual")
         if self.key_evidence and (self.residual == "polar_obs" or self.inflation is not None):
             raise ValueError("key_evidence needs Sigma_n = forcing + eta^2 (no polar_obs, no inflation)")
         if self.residual == "polar_obs" and (self.inflation is not None or self.weight != "robust"
@@ -315,6 +322,7 @@ class DKAConfig:
             zero_decay=getattr(args, "dka_zero_decay", False),
             plain_values=getattr(args, "dka_plain_values", False),
             key_evidence=getattr(args, "dka_key_evidence", False),
+            test_scale=getattr(args, "dka_test_scale", "sigma_n"),
             epsilon=args.epsilon,
         )
 

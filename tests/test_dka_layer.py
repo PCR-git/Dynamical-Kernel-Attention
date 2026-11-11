@@ -459,6 +459,41 @@ def test_plain_values():
         close(plain(x, t_measure=t * 5, return_metadata=True)[1]["attn_mat"].sum(2), 1.0, 1e-10)
 
 
+def test_measurement_test_scale():
+    """test_scale='measurement': logits -log Sigma_n - tau kappa log(1 + R^2 / (nu eta^2)), checked against the
+    formula from the layer's own Q and K; equal to the default when the forcing vanishes (Sigma_n = eta^2); and a
+    key's weight a = w / Sigma_n then falls as the forcing grows for every residual, unlike the default."""
+    from dka.kernels import dka_covariance, dka_residual_norm_sq
+    x, t = inputs(N=8)
+    layer = make_layer(test_scale="measurement", temperature=True)
+    with torch.no_grad():
+        layer.log_tau.copy_(torch.tensor([0.3, -0.2, 0.5], dtype=F64))
+    _, meta = layer(x, t_measure=t, return_metadata=True)
+    with torch.no_grad():
+        p = layer.sde_params()
+        cos, sin = rotation_angles(p["omega"], t)
+        Q = rotate(layer._project_in(layer.W_q, x), cos, -sin)
+        K = rotate(layer._project_in(layer.W_k, x), cos, -sin)
+        lags = (t[:, :, None] - t[:, None, :]).abs()[..., None]
+        E = torch.exp(-p["mu"] * lags)
+        Sigma = dka_covariance(p["mu"], p["sigma_sq"], p["eta_sq"], lags)
+        R_sq = dka_residual_norm_sq(Q, K, E, E * E)
+        kappa = (p["nu"] + D) / D
+        logits = -torch.log(Sigma) - torch.exp(layer.log_tau) * kappa * torch.log1p(R_sq / (p["nu"] * p["eta_sq"]))
+        A = torch.exp(logits).masked_fill(~torch.ones(8, 8, dtype=torch.bool).tril()[None, :, :, None], 0)
+        null = torch.exp(p["log_prior_precision"])
+        close(meta["attn_mat"], A * E / (null + (A * E * E).sum(2, keepdim=True)), 1e-10)
+    ref, meas = make_layer(), make_layer(test_scale="measurement")
+    with torch.no_grad():
+        for m in (ref, meas):
+            m.sigma_raw.fill_(-60.0)                                    # no forcing: Sigma_n = eta^2
+    close(meas(x, t_measure=t)[0], ref(x, t_measure=t)[0], 1e-12)
+    eta, nu, kappa, R2 = 1.0, 2.0 * D, (2.0 * D + D) / D, 50.0 * D    # a residual well into the tail
+    for test_scale, falls in (("sigma_n", False), ("measurement", True)):
+        a = [(1 / s) * (1 + R2 / (nu * (s if test_scale == "sigma_n" else eta))) ** -kappa for s in (1.0, 1.5)]
+        assert (a[1] < a[0]) == falls, test_scale
+
+
 def test_key_evidence():
     """key_evidence: with alpha = 0 the layer is DKA whatever the previous layer's share; with a = e^alpha - 1 and a
     constant share s, every key's noise is eta^2 / (1 + a s), which equals a plain layer with eta^2 scaled by

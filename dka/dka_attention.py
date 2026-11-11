@@ -279,6 +279,10 @@ class MultiheadIsotropicDKA(nn.Module):
             Sigma_inf = p["sigma_sq"] / (2 * p["mu"]) + p["eta_sq"]
             K_sq = K.pow(2).sum(dim=(-1, -2))[:, None]
             logits = mixture_logits(R_sq, K_sq, Sigma, Sigma_inf, c.head_dim, self.beta, tau)
+        elif c.test_scale == "measurement":   # match tested at the key's own noise eta^2, influence from 1/Sigma_n
+            eta_sq = p["eta_sq"].expand_as(Sigma)
+            content = robust_logits(R_sq, eta_sq, p["nu"], c.head_dim, c.robust_weight) + torch.log(eta_sq)
+            logits = (content if tau is None else tau * content) - torch.log(Sigma)
         else:
             logits = robust_logits(R_sq, Sigma, p["nu"], c.head_dim, c.robust_weight)
             if tau is not None:                                                 # content term only (Pearson VII)
