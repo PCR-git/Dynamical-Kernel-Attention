@@ -243,6 +243,11 @@ class DKAConfig:
     # influence's (exactly DKA at the start; v_inf,test = 0 is "measurement"). A selective (redescending) weight with a
     # test scale that grows with lag favors distant keys with large residuals
     test_scale: Literal["sigma_n", "measurement", "split"] = "sigma_n"
+    # Learned decay: mu_h = omega_max,h (b_floor,h + softplus(beta_h / 10)), starting at the coupled mu. Heads whose
+    # slowest period fits in calibration_length (every phase seen in training) may only keep horizon <= that length;
+    # the others may only decay faster than the coupling (b >= its initial value), since slower decay helps in the
+    # window at a cost beyond it that training cannot see. The /10 slows beta's steps under Adam
+    learn_decay: bool = False
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -258,6 +263,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.learn_decay and (self.zero_decay or self.zero_rotations or self.decay_init != "spectral"):
+            raise ValueError("learn_decay needs the coupled decay (no zero_decay, zero_rotations or log-linear init)")
         if self.test_scale != "sigma_n" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")
                                              or self.inflation is not None or self.flat_precision):
             raise ValueError(f"test_scale={self.test_scale!r} needs weight='robust', a Euclidean or dot-product "
@@ -326,6 +333,7 @@ class DKAConfig:
             plain_values=getattr(args, "dka_plain_values", False),
             key_evidence=getattr(args, "dka_key_evidence", False),
             test_scale=getattr(args, "dka_test_scale", "sigma_n"),
+            learn_decay=getattr(args, "dka_learn_decay", False),
             epsilon=args.epsilon,
         )
 

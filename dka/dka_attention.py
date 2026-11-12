@@ -79,6 +79,19 @@ class MultiheadIsotropicDKA(nn.Module):
         else:
             self.register_buffer("omega", omega)
         self.register_buffer("mu", mu)
+        # --- Learned decay (learn_decay): mu_h = omega_max,h (b_floor,h + softplus(beta_h / 10)), starting at mu ---
+        if c.learn_decay:
+            w = (c.omega_rescale * omega).abs()
+            w_max = w.max(-1).values
+            w_min = torch.where(w > 0, w, torch.full_like(w, float("inf"))).min(-1).values
+            covered = 2 * math.pi / w_min <= c.calibration_length       # every phase of the head seen in training
+            b0 = mu / w_max
+            floor = torch.where(covered, 1 / (c.calibration_length * w_max), 0.999 * b0)
+            self.register_buffer("decay_w_max", w_max)
+            self.register_buffer("decay_b_floor", floor)
+            self.decay_beta = nn.Parameter(10 * inv_softplus(b0 - floor))
+        else:
+            self.decay_beta = None
 
         # --- Noise: equal rho = v_inf / eta^2 across heads at initialization ---
         if c.process_noise == "variance":
@@ -152,7 +165,8 @@ class MultiheadIsotropicDKA(nn.Module):
         log_saturation is log S_max (None without saturation).
         """
         c = self.config
-        mu = self.mu
+        mu = self.mu if self.decay_beta is None else self.decay_w_max * (self.decay_b_floor
+                                                                         + F.softplus(self.decay_beta / 10))
         omega = c.omega_rescale * torch.stack([self.omega, -self.omega], dim=-1).flatten(-2)
         forcing = lambda raw: (F.softplus(raw) if c.process_noise == "variance"
                                else torch.where(mu > 0, 2 * mu * F.softplus(raw), F.softplus(raw)))
@@ -343,6 +357,8 @@ class MultiheadIsotropicDKA(nn.Module):
             "mu_v": mu, "sigma_sq_v": p["sigma_sq"], "sigma_tilde_sq_v": v_inf, "eta_sq_v": p["eta_sq"],
             "gamma_sq_v": torch.exp(-p["log_prior_precision"]), "nu_over_d": p["nu"] / self.config.head_dim,
         }
+        if self.decay_beta is not None:             # learned decay in units of the coupling, every block
+            summary["b_all"] = mu / self.decay_w_max
         if p["sigma_sq_test"] is not None:          # both forcings, logged for every block during training
             summary["v_inf_all"] = v_inf
             summary["v_inf_test_all"] = p["sigma_sq_test"] / (2 * mu).clamp_min(1e-12)

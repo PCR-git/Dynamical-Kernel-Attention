@@ -494,6 +494,36 @@ def test_measurement_test_scale():
         assert (a[1] < a[0]) == falls, test_scale
 
 
+def test_learn_decay():
+    """learn_decay: starts at the coupled decay (the layer equals DKA); heads whose slowest period fits in L are
+    covered, may slow down to horizon L but not beyond; the others may only decay faster; beta gets a gradient."""
+    cfg = dict(d_model=D_MODEL, n_heads=8, head_dim=16, damping=1.0, calibration_length=512)
+    torch.manual_seed(0)
+    ref = MultiheadIsotropicDKA(DKAConfig(**cfg)).double()
+    torch.manual_seed(0)
+    lrn = MultiheadIsotropicDKA(DKAConfig(**cfg, learn_decay=True)).double()
+    close(lrn.sde_params()["mu"] / ref.sde_params()["mu"], 1.0, 1e-6)   # beta is set in float32 at construction
+    x = torch.randn(2, 12, D_MODEL, dtype=F64, generator=torch.Generator().manual_seed(3))
+    close(lrn(x)[0], ref(x)[0], 1e-6)
+    horizon = (1 / ref.mu).tolist()
+    w = lrn.omega.abs()
+    covered = (2 * math.pi / w.min(-1).values <= 512).tolist()
+    assert covered == [h <= 25 for h in horizon], (horizon, covered)
+    with torch.no_grad():
+        lrn.decay_beta.fill_(-1e3)                                      # at the floors
+    mu = lrn.sde_params()["mu"]
+    for k in range(8):
+        if covered[k]:
+            close(1 / mu[k], 512.0, 1e-6)                               # covered: horizon up to L
+        else:
+            close(mu[k] / ref.mu[k], 0.999, 1e-6)                       # others: no slower than the coupling
+    with torch.no_grad():
+        lrn.decay_beta.zero_()
+    out = lrn(x)[0]
+    out.square().mean().backward()
+    assert torch.isfinite(lrn.decay_beta.grad).all() and (lrn.decay_beta.grad != 0).any()
+
+
 def test_split_test_scale():
     """test_scale='split': the test's own forcing starts equal to the influence's, so the layer starts as DKA; with
     no test forcing it is test_scale='measurement'; in general the logits are -log Sigma_n - tau kappa
