@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .config import RFAConfig
 from .init import (inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
-from .flex import rfa_two_pass_update
+from .flex import rfa_flex_update, rfa_two_pass_update
 from .kernels import rotate, rotation_angles, pairwise_lags, lag_covariance, residual_norm_sq, robust_logits
 
 
@@ -145,7 +145,8 @@ class MultiheadIsotropicRFA(nn.Module):
                 raise ValueError(f"return_metadata needs kernel='explicit' (got {c.kernel!r})")
             null = self._null_logit(p) if c.prior == "tokens" else None
             rot = (cos, sin) if c.rotate_values else (None, None)
-            delta = rfa_two_pass_update(p, t, Q, K, V, V_agg, *rot, c, null, causal)
+            update = rfa_flex_update if c.kernel == "flex" else rfa_two_pass_update
+            delta = update(p, t, Q, K, V, V_agg, *rot, c, null, causal)
             return self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1)), self._param_summary(p)
 
         # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---

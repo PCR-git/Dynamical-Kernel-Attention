@@ -559,6 +559,38 @@ def test_rfa_two_pass_kernel():
             pass
 
 
+def test_rfa_flex_kernel_cpu():
+    """RFA with kernel='flex' on the CPU (FlexAttention's unfused reference, float64) equals the explicit update:
+    a forward-only smoke test of the score_mod and the per-row scalars (gradients are checked on the GPU)."""
+    import warnings
+    import torch.nn.attention.flex_attention as fa
+    debug = fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG
+    fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = True
+    x, t = inputs(N=24)
+    cfg = dict(d_model=D_MODEL, n_heads=H, head_dim=D, frequency_init="spectral", damping=5.0, zero_decay_frac=0.0)
+    cases = [dict(), dict(output="estimate"), dict(prior="tokens"), dict(process_noise="steady_state"),
+             dict(robust_weight=False), dict(full_residual_norm=False), dict(dle_bias=False, dle_gate=False),
+             dict(rotate_values=False)]
+    try:
+        for kw in cases:
+            for t_m, causal in ((None, True), (t, True), (t, False)):
+                torch.manual_seed(0)
+                ref = MultiheadIsotropicRFA(RFAConfig(**cfg, **kw)).double()
+                fast = MultiheadIsotropicRFA(RFAConfig(**cfg, kernel="flex", **kw)).double()
+                fast.load_state_dict(ref.state_dict())
+                with torch.no_grad():
+                    for m in (ref, fast):
+                        m.sigma_raw.add_(1.0)
+                        m.tau_raw.copy_(torch.tensor([0.3, -0.2, 1.5], dtype=F64))
+                        if kw.get("prior") == "tokens":
+                            m.log_c.copy_(torch.tensor([-1.0, 0.5, 2.0], dtype=F64))
+                with warnings.catch_warnings(), torch.no_grad():
+                    warnings.simplefilter("ignore")
+                    close(fast(x, t_measure=t_m, causal=causal)[0], ref(x, t_measure=t_m, causal=causal)[0], 1e-10)
+    finally:
+        fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = debug
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

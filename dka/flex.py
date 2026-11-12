@@ -240,3 +240,76 @@ def rfa_two_pass_update(p, t, Q, K, V, V_agg, cos, sin, config, null_logit, caus
     lse1, lse0 = torch.logsumexp(l1, dim=2), torch.logsumexp(L, dim=2)
     o1 = torch.einsum("bijh,bjhdc->bihdc", torch.softmax(l1, dim=2), V_agg)
     return rfa_combine(o1, lse1, lse0, null_logit, V, cos, sin, config.output)
+
+
+@torch.compiler.disable      # as _two_flex_passes
+def _rfa_flex_passes(q, k, v, tpos, q_sq, k_sq, mu, s_inf, d_eta, inv_nu, tau, coef, config, causal):
+    """RFA's two FlexAttention passes: (o1, lse1, lse0), [B, H, N, ...]. Captured tensors are [B, H, N]."""
+    c = config
+    N, f32 = q.shape[2], lse_dtype(q.dtype)
+    lo, hi, inv_sqrt_d = c.min_exponent, c.max_exponent, 1.0 / c.head_dim ** 0.5
+
+    def score_mod(k_pow):
+        def mod(score, b, h, qi, kj):
+            lag = tpos[b, qi] - tpos[b, kj]
+            lag = lag.clamp_min(0) if causal else lag.abs()       # partly masked blocks evaluate future pairs too
+            log_E = (-mu[b, h, qi] * lag).clamp(lo, hi)
+            E = torch.exp(log_E)
+            E2 = E * E
+            Sigma = s_inf[b, h, qi] + d_eta[b, h, qi] * E2
+            cross = score.to(f32)
+            if c.full_residual_norm:
+                R_sq = (q_sq[b, h, qi] + E2 * k_sq[b, h, kj] - 2 * E * cross).clamp_min(0)
+            else:
+                R_sq = -E * cross
+            x = R_sq * (inv_nu[b, h, qi] / Sigma if c.dle_gate else inv_sqrt_d)
+            L = -coef[b, h, qi] * (torch.log1p(x) if c.robust_weight else x)
+            if c.dle_bias:
+                L = L - tau[b, h, qi] * torch.log(Sigma)
+            return L + log_E if k_pow == 1 else L
+        return mod
+
+    dev = q.device.type
+    mask = _causal_mask(N, q.device) if causal else None
+    opts = {} if KERNEL_OPTIONS is None else {"kernel_options": KERNEL_OPTIONS}
+    flags = ("rfa", c.full_residual_norm, c.dle_gate, c.robust_weight, c.dle_bias)
+    with torch.autocast(device_type=dev, enabled=False):
+        o1, lse1 = _flex_fn(flags + (1,), dev)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0,
+                                               return_lse=True, **opts)
+        _, lse0 = _flex_fn(flags + (0,), dev)(q, k, v[..., :16].contiguous(), score_mod=score_mod(0), block_mask=mask,
+                                              scale=1.0, return_lse=True, **opts)
+    return o1, lse1, lse0
+
+
+def lse_dtype(dtype):
+    """The precision of the logits and log-sum-exps: at least float32 (float64 stays float64, for tests)."""
+    return torch.promote_types(dtype, torch.float32)
+
+
+def rfa_flex_update(p, t, Q, K, V, V_agg, cos, sin, config, null_logit, causal=True):
+    """
+    rfa_two_pass_update through FlexAttention (weights never materialized). As flex_update: q, k, v in the autocast
+    dtype, squared norms from the kernel's own q, k, per-head scalars copied per query row, everything elementwise in
+    at least float32.
+    """
+    c = config
+    B, N, H, D, _ = Q.shape
+    low = torch.is_autocast_enabled(Q.device.type)
+    dtype = torch.get_autocast_dtype(Q.device.type) if low else Q.dtype
+    f32 = lse_dtype(dtype)
+    flat = lambda X: X.flatten(-2).transpose(1, 2).to(dtype).contiguous()          # [B, H, N, 2D]
+    q, k, v = flat(Q), flat(K), flat(V_agg)
+    q_sq, k_sq = q.to(f32).pow(2).sum(-1), k.to(f32).pow(2).sum(-1)
+    tpos = t.to(f32).expand(B, N).contiguous()
+    # per-head constants: Sigma = (v + gamma^2 + cov_eps) + (eta^2 - v) E^2, L = tau (-log Sigma - kappa log(1 + x))
+    mu, var, eta, gamma, nu, tau = (p[n].to(f32) for n in ("mu", "process_var", "eta_sq", "gamma_sq", "nu", "tau"))
+    v_ss = var / (2 * mu) if c.process_noise == "variance" else var
+    s_inf, d_eta, inv_nu = v_ss + gamma + c.cov_epsilon, eta - v_ss, 1 / nu
+    coef = tau * (nu + c.head_dim) / c.head_dim if c.robust_weight else tau
+    rows = lambda s: s.view(1, H, 1).expand(B, H, N).contiguous()                    # see flex_update
+    o1, lse1, lse0 = _rfa_flex_passes(q, k, v, tpos, q_sq, k_sq, *(rows(s) for s in (mu, s_inf, d_eta, inv_nu, tau, coef)),
+                                      c, causal)
+    o1 = o1.to(f32).transpose(1, 2).reshape(B, N, H, D, 2)
+    lse1, lse0 = lse1.to(f32).transpose(1, 2), lse0.to(f32).transpose(1, 2)            # [B, N, H]
+    null = None if null_logit is None else null_logit.to(f32)
+    return rfa_combine(o1, lse1, lse0, null, V.to(f32), cos, sin, c.output)
