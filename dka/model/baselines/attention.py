@@ -3,10 +3,11 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from dka.flex import biased_attention
 from dka.init import init_spectrally_coupled_rope
 from ..config import AttentionConfig
-from dka.flex import biased_attention
 from .pos_encoding import RoPE, SCRoPE, XPos, get_alibi_slopes
 
 
@@ -16,6 +17,13 @@ def softmax_plus_one(scores, null_logit=0.0):
     m = torch.maximum(scores.amax(dim=-1, keepdim=True), b)
     e = torch.exp(scores - m)
     return e / (e.sum(dim=-1, keepdim=True) + torch.exp(b - m))
+
+
+# scaled_dot_product_attention's backends in order of preference. PyTorch's own choice falls back to the
+# memory-efficient kernel where flash attention is not built (e.g. compute capability 12.0, RTX 50xx), although
+# cuDNN's is 2-3x faster there; math is the reference (CPU, float64)
+_SDPA_PRIORITY = [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION,
+                  SDPBackend.MATH]
 
 
 class MultiHeadAttentionLayer(nn.Module):
@@ -106,7 +114,9 @@ class MultiHeadAttentionLayer(nn.Module):
             slopes = self.bias_slopes.view(-1) if slopes is None else slopes + self.bias_slopes.view(-1)
         null = 0.0 if c.softmax_plus_one else (self.null_logit.view(1, -1, 1) if c.learned_null else None)
         if slopes is None and null is None:
-            context, mass = F.scaled_dot_product_attention(Q, K, V, is_causal=causal, scale=scale), 1.0
+            with sdpa_kernel(_SDPA_PRIORITY, set_priority=True):
+                context = F.scaled_dot_product_attention(Q, K, V, is_causal=causal, scale=scale)
+            mass = 1.0
         else:
             dtype = V.dtype
             f32 = torch.promote_types(dtype, torch.float32)       # the bias and null slot in at least float32
