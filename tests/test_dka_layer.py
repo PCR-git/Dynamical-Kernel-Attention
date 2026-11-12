@@ -514,7 +514,7 @@ def test_learn_decay():
     mu = lrn.sde_params()["mu"]
     for k in range(8):
         if covered[k]:
-            close(1 / mu[k], 512.0, 1e-6)                               # covered: horizon up to L
+            close(512.0 * mu[k], 1.0, 1e-6)                             # covered: horizon up to L
         else:
             close(mu[k] / ref.mu[k], 0.999, 1e-6)                       # others: no slower than the coupling
     with torch.no_grad():
