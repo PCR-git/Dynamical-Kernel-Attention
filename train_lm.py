@@ -74,8 +74,9 @@ def main():
     p.add_argument("--bf16", action="store_true", help="bf16 autocast for training and validation (matmuls in bf16; "
                    "positions, phases, the residual's cross term and the elementwise kernels stay float32)")
     p.add_argument("--tf32", action="store_true", help="TF32 tensor cores for float32 matmuls")
-    p.add_argument("--kernel", choices=("explicit", "flex"), default=None, help="DKA presets: how the attention "
-                   "update is computed; flex = FlexAttention (memory linear in the length; needs CUDA); default explicit")
+    p.add_argument("--kernel", choices=("explicit", "flex"), default=None, help="how attention is computed; flex = "
+                   "fused kernels, weights never materialized (DKA: FlexAttention; baselines: flash / memory-efficient "
+                   "attention, FlexAttention with a distance bias or null slot); needs CUDA; default explicit")
     p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published N(0,1)")
     p.add_argument("--max-steps", type=int, default=None, help="limit train/eval batches per epoch (quick tests)")
     p.add_argument("--max-tokens", type=float, default=None,
@@ -131,8 +132,9 @@ def main():
     print(f"{cli.preset}: {type(model.backbone).__name__}, {count_parameters(model):,} parameters")
     if cli.kernel not in (None, "explicit"):
         from dka import MultiheadIsotropicDKA
-        if not any(isinstance(m, MultiheadIsotropicDKA) for m in model.modules()):
-            raise ValueError("--kernel applies to DKA presets only")
+        from dka.model.baselines import MultiHeadAttentionLayer
+        if not any(isinstance(m, (MultiheadIsotropicDKA, MultiHeadAttentionLayer)) for m in model.modules()):
+            raise ValueError("--kernel applies to DKA presets and the baselines only")
     if init_from and not cli.resume:
         path = init_from
         if not path.endswith(".pt"):

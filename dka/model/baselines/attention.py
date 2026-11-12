@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from dka.init import init_spectrally_coupled_rope
 from ..config import AttentionConfig
+from dka.flex import biased_attention
 from .pos_encoding import RoPE, SCRoPE, XPos, get_alibi_slopes
 
 
@@ -82,11 +83,44 @@ class MultiHeadAttentionLayer(nn.Module):
 
         # [B, H, L, D_head]
         Q, K, V = Q.transpose(1, 2), K.transpose(1, 2), V.transpose(1, 2)
+        if c.kernel == "fused":
+            context = self._fused(Q, K, V, causal).transpose(1, 2).reshape(B, L, c.width)
+            return self.output_projection(context), {"attn_mat": None}
         chunk = self.query_chunk if self.query_chunk and L > self.query_chunk else L
         rows = [self._rows(Q, K, V, i0, min(i0 + chunk, L), causal) for i0 in range(0, L, chunk)]
         context = torch.cat([r[0] for r in rows], dim=2).transpose(1, 2).reshape(B, L, c.width)
         attn_weights = rows[0][1] if len(rows) == 1 else None   # the full matrix only without chunking
         return self.output_projection(context), {"attn_mat": attn_weights}
+
+    def _fused(self, Q, K, V, causal):
+        """kernel='fused': the same attention without materializing the weights (Q, K, V: [B, H, L, D_head])."""
+        c = self.config
+        L = K.shape[2]
+        scale = 1 / math.sqrt(self.head_dim)
+        if c.yarn_original_length is not None and c.rope in ("rope", "sc_rope"):
+            scale = scale * self.rope.yarn_logit_scale(L)
+        slopes = None
+        if c.alibi:
+            slopes = self.alibi_slopes.view(-1)
+        if c.bias_damping is not None:
+            slopes = self.bias_slopes.view(-1) if slopes is None else slopes + self.bias_slopes.view(-1)
+        null = 0.0 if c.softmax_plus_one else (self.null_logit.view(1, -1, 1) if c.learned_null else None)
+        if slopes is None and null is None:
+            context, mass = F.scaled_dot_product_attention(Q, K, V, is_causal=causal, scale=scale), 1.0
+        else:
+            dtype = V.dtype
+            f32 = torch.promote_types(dtype, torch.float32)       # the bias and null slot in at least float32
+            q, k, v = (X.to(dtype).contiguous() for X in (Q, K, V))
+            zero = torch.zeros(self.num_heads, device=Q.device)
+            context, lse = biased_attention(q, k, v, (zero if slopes is None else slopes).to(f32).contiguous(),
+                                            scale, causal)
+            mass = 1.0
+            if null is not None:                     # weight on the keys: Z / (Z + e^b), Z = e^lse
+                mass = torch.sigmoid(lse.to(f32) - null)[..., None]
+                context = (context.to(f32) * mass).to(dtype)
+        if c.output == "innovation":                 # sum_j w_j (V_j - V_i)
+            context = context - mass * V
+        return context
 
     def _rows(self, Q, K, V, i0, i1, causal):
         """Attention of queries i0..i1-1 over all keys (Q, K, V: [B, H, L, D_head]): (context rows, weights)."""

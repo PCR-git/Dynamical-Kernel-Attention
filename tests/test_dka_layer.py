@@ -883,6 +883,52 @@ def test_baseline_innovation_and_null():
     except ValueError:
         pass
 
+def test_fused_baselines_cpu():
+    """Baselines with kernel='fused' (scaled_dot_product_attention, or FlexAttention for a distance bias or null slot)
+    equal the explicit layer on the CPU: RoPE, YaRN, ALiBi, the coupled bias, softmax plus one, the innovation output
+    and the learned null, causal and not. Gradients are compared where the CPU has a backward (no FlexAttention)."""
+    import warnings
+    import torch.nn.attention.flex_attention as fa
+    from dka.model.baselines.attention import MultiHeadAttentionLayer
+    from dka.model.config import AttentionConfig
+    debug = fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG
+    fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = True
+    cases = (dict(), dict(yarn_original_length=8), dict(rope=None, alibi=True), dict(rope="sc_rope", bias_damping=1.0),
+             dict(softmax_plus_one=True), dict(output="innovation"), dict(output="innovation", learned_null=True),
+             dict(rope=None, alibi=True, output="innovation", learned_null=True))
+    try:
+        for kw in cases:
+            for causal in (True, False):
+                torch.manual_seed(0)
+                ref = MultiHeadAttentionLayer(AttentionConfig(d_model=D_MODEL, n_heads=H, width=H * D, **kw)).double()
+                fast = MultiHeadAttentionLayer(AttentionConfig(d_model=D_MODEL, n_heads=H, width=H * D, kernel="fused",
+                                                               **kw)).double()
+                fast.load_state_dict(ref.state_dict())
+                if kw.get("learned_null"):
+                    with torch.no_grad():
+                        for m in (ref, fast):
+                            m.null_logit.copy_(torch.linspace(-1.0, 2.0, H).view(1, H, 1, 1))
+                x = torch.randn(2, 24, D_MODEL, dtype=F64, generator=torch.Generator().manual_seed(1))
+                sdpa = not (kw.get("alibi") or kw.get("bias_damping") or kw.get("softmax_plus_one")
+                            or kw.get("learned_null"))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with torch.set_grad_enabled(sdpa):
+                        a, b = fast(x, causal=causal)[0], ref(x, causal=causal)[0]
+                    close(a, b, 1e-12)
+                    if sdpa:
+                        a.square().sum().backward(), b.square().sum().backward()
+                        for pa, pb in zip(fast.parameters(), ref.parameters()):
+                            close(pa.grad, pb.grad, 1e-10)
+        try:
+            AttentionConfig(d_model=16, n_heads=2, width=16, kerple_log=True, kernel="fused")
+            raise AssertionError("kernel='fused' with kerple_log was accepted")
+        except ValueError:
+            pass
+    finally:
+        fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = debug
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

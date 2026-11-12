@@ -30,6 +30,10 @@ class AttentionConfig:
         yarn_original_length: training length; if set, RoPE / SC-RoPE apply YaRN zero-shot beyond it (inference)
         rope_base:     base of the RoPE / SC-RoPE spectrum (and of the coupled decays and bias slopes)
         bias_slope_scale: multiplies the coupled bias slopes 2 mu_h (1 = DKA's prediction; tests whether it is best)
+        kernel:        "explicit" (the weights are materialized and returned) or "fused": without a distance bias or
+                       null slot, scaled_dot_product_attention (flash / memory-efficient kernels); with them,
+                       FlexAttention (the bias as a score_mod, the null slot from the log-sum-exp). Weights are not
+                       returned. Not with decay_damping or kerple_log
 
     The baselines of the paper are B1 = rope, B2 = alibi, B3 = rope + decay, B4 = sc_rope + decay,
     B5 = sc_rope + coupled linear bias, B6 = kerple_log, B7 = xpos, B8 = NoPE, B9 = rope + softmax plus one.
@@ -49,8 +53,13 @@ class AttentionConfig:
     bias_slope_scale: float = 1.0
     output: Literal["estimate", "innovation"] = "estimate"
     learned_null: bool = False
+    kernel: Literal["explicit", "fused"] = "explicit"
 
     def __post_init__(self):
+        if self.kernel not in ("explicit", "fused"):
+            raise ValueError(f"kernel must be 'explicit' or 'fused', got {self.kernel!r}")
+        if self.kernel == "fused" and (self.decay_damping is not None or self.kerple_log):
+            raise ValueError("kernel='fused' does not support decay_damping or kerple_log")
         if self.output not in ("estimate", "innovation"):
             raise ValueError(f"output must be 'estimate' or 'innovation', got {self.output!r}")
         if self.learned_null and (self.output != "innovation" or self.softmax_plus_one):

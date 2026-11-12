@@ -63,7 +63,7 @@ _FLEX, _MASKS = {}, {}
 KERNEL_OPTIONS = None        # FlexAttention kernel_options (block sizes, warps, stages); None = its defaults
 
 
-def _flex_fn(k_pow, device_type="cuda"):
+def _flex_fn(key, device_type="cuda"):
     """
     flex_attention compiled once per pass (eager flex_attention is a slow, unfused reference). Each pass has its own
     compiled function, so that neither sees the other's score_mod or value width: alternating them in one function
@@ -72,10 +72,10 @@ def _flex_fn(k_pow, device_type="cuda"):
     from torch.nn.attention.flex_attention import flex_attention
     if device_type != "cuda":                 # CPU: the unfused reference (slow; for tests)
         return flex_attention
-    if k_pow not in _FLEX:
+    if key not in _FLEX:
         torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 64)
-        _FLEX[k_pow] = torch.compile(flex_attention, dynamic=False)
-    return _FLEX[k_pow]
+        _FLEX[key] = torch.compile(flex_attention, dynamic=False)
+    return _FLEX[key]
 
 
 def _causal_mask(N, device):
@@ -113,6 +113,21 @@ def _two_flex_passes(q, k, v, tpos, q_sq, k_sq, mu, v_inf, s_inf, inv_nu, coef, 
         _, lse2 = _flex_fn(2, dev)(q, k, v[..., :16].contiguous(), score_mod=score_mod(2), block_mask=mask, scale=1.0,
                                    return_lse=True, **opts)
     return o1, lse1, lse2
+
+
+@torch.compiler.disable
+def biased_attention(q, k, v, slopes, scale, causal=True):
+    """
+    Softmax attention with a linear distance bias, scale q.k - slope_h |i - j| (ALiBi and the coupled bias of the
+    baselines), through FlexAttention: (out, lse), [B, H, N, D] and [B, H, N]. slopes: [H] (no gradient).
+    """
+    def mod(score, b, h, qi, kj):
+        return score - slopes[h] * (qi - kj).abs()
+
+    dev = q.device.type
+    mask = _causal_mask(q.shape[2], q.device) if causal else None
+    with torch.autocast(device_type=dev, enabled=False):
+        return _flex_fn("bias", dev)(q, k, v, score_mod=mod, block_mask=mask, scale=scale, return_lse=True)
 
 
 def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
