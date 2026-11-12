@@ -1,3 +1,4 @@
+import contextlib
 import math
 
 import torch
@@ -14,6 +15,13 @@ _RFA_LOG_KEYS = {"mu_v": "mu", "sigma_sq_v": "sigma", "sigma_tilde_sq_v": "sigma
                  "prior_weight": "prior_weight", "zeta": "zeta", "saturation": "saturation",
                  "step_mean": "step", "v_inf_all": "v_inf_all", "v_inf_test_all": "v_inf_test_all", "b_all": "b_all"}
 _PER_BLOCK_KEYS = ("prior_weight", "zeta", "saturation", "step_mean", "v_inf_all", "v_inf_test_all", "b_all")   # logged for every block, [n_blocks, H]; the rest last block, [H]
+
+
+def _autocast(args):
+    """bf16 autocast on the GPU when args.bf16 (train_lm --bf16); otherwise a no-op (the published runs are float32)."""
+    if getattr(args, "bf16", False) and torch.cuda.is_available():
+        return torch.autocast("cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
 
 
 def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=None, log_every=100):
@@ -33,7 +41,8 @@ def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=Non
         labels = batch["labels"].to(args.device)
 
         optimizer.zero_grad()
-        loss, output_dict = model.loss(input_ids, labels, causal=True)
+        with _autocast(args):
+            loss, output_dict = model.loss(input_ids, labels, causal=True)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -69,7 +78,8 @@ def evaluate_lm(model, loader, args):
     for batch in loader:
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)
-        loss, _ = model.loss(input_ids, labels, causal=True)
+        with _autocast(args):
+            loss, _ = model.loss(input_ids, labels, causal=True)
         n = (labels[:, 1:] != -100).sum().item()
         total_nll += loss.item() * n
         total_tokens += n

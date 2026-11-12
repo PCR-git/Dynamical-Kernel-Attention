@@ -10,6 +10,20 @@ import torch
 import torch.nn.functional as F
 
 
+def cross_dot(Q_rot, K_rot):
+    """
+    Re<Q~_i, K~_j> for every pair: einsum("bihdc,bjhdc->bijh"), [B, nq, N, H]. Computed in float32 even under
+    bf16/fp16 autocast: the residual subtracts it from |K|^2 + E^2 |Q|^2, and its rounding in half precision
+    (~0.4%) would swamp the residual of a well-matched key. Float32 and float64 inputs are left as they are.
+    """
+    low = Q_rot.dtype in (torch.bfloat16, torch.float16) or K_rot.dtype in (torch.bfloat16, torch.float16)
+    if not (low or torch.is_autocast_enabled(Q_rot.device.type)):
+        return torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    with torch.autocast(device_type=Q_rot.device.type, enabled=False):
+        dtype = torch.promote_types(torch.promote_types(Q_rot.dtype, K_rot.dtype), torch.float32)
+        return torch.einsum("bihdc,bjhdc->bijh", Q_rot.to(dtype), K_rot.to(dtype))
+
+
 def rotate(x, cos, sin):
     """Complex multiplication x * (cos + i sin). x: [..., D, 2]; cos, sin: broadcastable to [..., D]."""
     re = x[..., 0] * cos - x[..., 1] * sin
@@ -60,7 +74,7 @@ def residual_norm_sq(Q_rot, K_rot, E, full=True):
     Q_rot, K_rot: [B, N, H, D, 2]; E: [B, N, N, H]. Returns [B, N, N, H].
     With full=False only the cross term -E_ij Re<q_i, k_j> is returned (dot-product attention).
     """
-    cross = 2 * E * torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    cross = 2 * E * cross_dot(Q_rot, K_rot)
     if not full:
         return -cross / 2
     q_sq = Q_rot.pow(2).sum(dim=(-1, -2))[:, :, None, :]
@@ -185,7 +199,7 @@ def dka_residual_norm_sq(Q_rot, K_rot, E, h, c=1.0):
     Q_rot, K_rot: [B, N, H, D, 2]; E, h, c: [B|1, N, N, H]. Returns [B, N, N, H], clamped at 0 against
     round-off in the expansion.
     """
-    cross = 2 * E * torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    cross = 2 * E * cross_dot(Q_rot, K_rot)
     q_sq = Q_rot.pow(2).sum(dim=(-1, -2))[:, :, None, :]
     k_sq = K_rot.pow(2).sum(dim=(-1, -2))[:, None, :, :]
     return (c * k_sq + h * q_sq - cross).clamp_min(0)
@@ -197,7 +211,7 @@ def dot_residual(Q_rot, K_rot, E):
     |K_j|^2 and the query-only E^2 |Q_i|^2. With the exponential weight the content logit is 2 E Re<Q~_i, K~_j> /
     (nu Sigma_n), a decayed dot product. Can be negative (no clamp). Shapes as dka_residual_norm_sq.
     """
-    return -2 * E * torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    return -2 * E * cross_dot(Q_rot, K_rot)
 
 
 def polar_residual_norm_sq(Q_rot, K_rot, E, eps=1e-5):
@@ -214,7 +228,7 @@ def polar_residual_norm_sq(Q_rot, K_rot, E, eps=1e-5):
 
     Q_rot, K_rot: [B, N, H, D, 2]; E: [B|1, Nq, N, H]. Returns [B, Nq, N, H], clamped at 0.
     """
-    dot = torch.einsum("bihdc,bjhdc->bijh", Q_rot, K_rot)
+    dot = cross_dot(Q_rot, K_rot)
     q_norm = Q_rot.pow(2).sum(dim=(-1, -2)).add(eps).sqrt()[:, :, None, :]
     k_sq = K_rot.pow(2).sum(dim=(-1, -2))[:, None, :, :]
     return (2 * E * E * (k_sq - k_sq.add(eps).sqrt() * dot / q_norm)).clamp_min(0)

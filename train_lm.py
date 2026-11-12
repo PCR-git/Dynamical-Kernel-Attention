@@ -71,6 +71,9 @@ def main():
     p.add_argument("--lr", type=float, default=None, help="default: the preset's train_lr, else 1e-3")
     p.add_argument("--compile", action="store_true", help="torch.compile the backbone (needs Triton; ~1.8x faster RFA)")
     p.add_argument("--grad-checkpointing", action="store_true", help="trade ~30%% speed for much less memory")
+    p.add_argument("--bf16", action="store_true", help="bf16 autocast for training and validation (matmuls in bf16; "
+                   "positions, phases, the residual's cross term and the elementwise kernels stay float32)")
+    p.add_argument("--tf32", action="store_true", help="TF32 tensor cores for float32 matmuls")
     p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published N(0,1)")
     p.add_argument("--max-steps", type=int, default=None, help="limit train/eval batches per epoch (quick tests)")
     p.add_argument("--max-tokens", type=float, default=None,
@@ -93,6 +96,10 @@ def main():
     args = make_args(cli.preset, device=device, batch_size=cli.batch_size, grad_checkpointing=cli.grad_checkpointing,
                      **parse_overrides(cli.set))
     seed_everything(cli.seed if cli.seed is not None else getattr(args, "train_seed", 2025))
+    args.bf16 = cli.bf16
+    if cli.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     # presets may carry their own schedule (fine-tunes from a trained run); the command line takes precedence
     epochs = cli.epochs or getattr(args, "train_epochs", None) or 15
     lr = cli.lr or getattr(args, "train_lr", None) or 1e-3
