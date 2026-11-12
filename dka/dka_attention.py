@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from .config import DKAConfig
 from .init import (inv_softplus_exact as inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
+from .flex import two_pass_update
 from .kernels import (rotate, rotation_angles, pairwise_lags, robust_logits, temper_content, mixture_logits, inflation_terms, dka_covariance,
                       dka_residual_norm_sq, polar_residual_norm_sq, dot_residual, calibrated_evidence, forcing_variance)
 
@@ -234,21 +235,28 @@ class MultiheadIsotropicDKA(nn.Module):
             a = torch.expm1(self.key_evidence_alpha)
             d_eta = (p["eta_sq"] / (1 + a * key_share) - p["eta_sq"])[:, None]   # [B, 1, N, H]
 
-        # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
-        chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
-        rows = [self._rows(p, t, Q, K, V, V_rot, cos, sin, i0, min(i0 + chunk, N), causal, d_eta)
-                for i0 in range(0, N, chunk)]
-        dV = torch.cat([r[0] for r in rows], dim=1)
-        S_eff = torch.cat([r[4] for r in rows], dim=1)
-        denom = torch.cat([r[6] for r in rows], dim=1)
+        if c.kernel == "two_pass":          # two softmax passes (dka/flex.py); no per-pair diagnostics
+            if return_metadata:
+                raise ValueError("return_metadata needs kernel='explicit'")
+            tau = torch.exp(self.log_tau) if self.log_tau is not None else None
+            dV, step = two_pass_update(p, t, Q, K, V, V_rot, cos, sin, c, tau, causal)
+        else:
+            # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
+            chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
+            rows = [self._rows(p, t, Q, K, V, V_rot, cos, sin, i0, min(i0 + chunk, N), causal, d_eta)
+                    for i0 in range(0, N, chunk)]
+            dV = torch.cat([r[0] for r in rows], dim=1)
+            S_eff = torch.cat([r[4] for r in rows], dim=1)
+            denom = torch.cat([r[6] for r in rows], dim=1)
+            step = S_eff / denom
 
         X = dV + V if c.output == "estimate" else dV                            # new estimate, or innovation
         out = self.W_o(X.permute(0, 1, 4, 2, 3).reshape(B, N, -1))     # [re heads..., im heads...]
 
         info = self._param_summary(p)
-        info["step_mean"] = (S_eff / denom).detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
+        info["step_mean"] = step.detach().mean(dim=(0, 1))   # per-head mean step over batch and positions
         if c.key_evidence:
-            info["share"] = S_eff / denom                                       # for the next layer's keys
+            info["share"] = step                                                # for the next layer's keys
         if return_metadata:
             _, A_hat, null, S, _, m, _ = rows[0]
             info.update(self._metadata(p, A_hat, null, S, S_eff, m, denom, dV))

@@ -494,6 +494,33 @@ def test_measurement_test_scale():
         assert (a[1] < a[0]) == falls, test_scale
 
 
+def test_two_pass_kernel():
+    """kernel='two_pass' (dka/flex.py: two softmax passes with their log-sum-exps) equals the explicit update, outputs
+    and every gradient, across the configurations the fused kernel is meant to cover."""
+    x, t = inputs(N=10)
+    cases = [dict(), dict(robust_weight=False), dict(temperature=True), dict(output="estimate"),
+             dict(rotate_values=False), dict(prior="none"), dict(prior="direct"), dict(learn_decay=True)]
+    for kw in cases:
+        for t_m, causal in ((t, True), (None, True), (t, False)):
+            ref = make_layer(**kw)
+            fast = make_layer(kernel="two_pass", **kw)
+            fast.load_state_dict(ref.state_dict())
+            with torch.no_grad():
+                for m in (ref, fast):
+                    m.sigma_raw.add_(1.0)                               # a sizable forcing
+                    if m.log_tau is not None:
+                        m.log_tau.copy_(torch.tensor([0.3, -0.2, 0.5], dtype=F64))
+            o_r, i_r = ref(x, t_measure=t_m, causal=causal)
+            o_f, i_f = fast(x, t_measure=t_m, causal=causal)
+            close(o_f, o_r, 1e-10)
+            close(i_f["step_mean"], i_r["step_mean"], 1e-10)
+            o_r.square().mean().backward()
+            o_f.square().mean().backward()
+            for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                if a.grad is not None:
+                    close(b.grad, a.grad, 1e-9)
+
+
 def test_learn_decay():
     """learn_decay: starts at the coupled decay (the layer equals DKA); heads whose slowest period fits in L are
     covered, may slow down to horizon L but not beyond; the others may only decay faster; beta gets a gradient."""

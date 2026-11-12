@@ -248,6 +248,9 @@ class DKAConfig:
     # the others may only decay faster than the coupling (b >= its initial value), since slower decay helps in the
     # window at a cost beyond it that training cannot see. The /10 slows beta's steps under Adam
     learn_decay: bool = False
+    # How the update is computed: "explicit" materializes every pair's weight (the reference, with diagnostics);
+    # "two_pass" writes it as two softmax passes (dka/flex.py), the form a fused kernel computes
+    kernel: Literal["explicit", "two_pass"] = "explicit"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -263,6 +266,13 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.kernel != "explicit" and (self.weight != "robust" or self.residual != "euclidean"
+                                          or self.inflation is not None or self.saturation is not None
+                                          or self.flat_precision or self.test_scale != "sigma_n"
+                                          or self.key_evidence or self.plain_values):
+            raise ValueError(f"kernel={self.kernel!r} supports the Student-t or exponential weight with the Euclidean "
+                             "residual, without inflation, saturation, flat precision, test_scale, key_evidence or "
+                             "plain values (so far)")
         if self.learn_decay and (self.zero_decay or self.zero_rotations or self.decay_init != "spectral"):
             raise ValueError("learn_decay needs the coupled decay (no zero_decay, zero_rotations or log-linear init)")
         if self.test_scale != "sigma_n" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")
@@ -334,6 +344,7 @@ class DKAConfig:
             key_evidence=getattr(args, "dka_key_evidence", False),
             test_scale=getattr(args, "dka_test_scale", "sigma_n"),
             learn_decay=getattr(args, "dka_learn_decay", False),
+            kernel=getattr(args, "dka_kernel", "explicit"),
             epsilon=args.epsilon,
         )
 
