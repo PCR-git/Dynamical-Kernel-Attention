@@ -296,6 +296,7 @@ for _name, _rb in (("r1500", 1500.0), ("r1e4", 1e4), ("r5e4", 5e4)):
     if _name != "r1e4":
         PRESETS.setdefault(f"D3.b1.{_name}", _p)
     PRESETS.setdefault(f"D3.b1.{_name}.L1024", dict(_p, seq_len=1024, train_batch_size=8))
+PRESETS.setdefault("B1.L1024", dict(PRESETS["B1"], seq_len=1024, train_batch_size=8))   # RoPE at 1024, the reference
 
 # The ~120M scale-up on PG-19: 9 layers x 768, 12 heads (124M, embedding tied to the output head), fused kernels and
 # bf16, micro-batches of 8192 tokens accumulated to 262k tokens per optimizer step, learning rate 6e-4, embedding
