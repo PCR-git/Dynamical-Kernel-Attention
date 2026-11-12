@@ -335,6 +335,28 @@ def _lm_grads(lm, ids, use_loss_method):
     return loss.detach(), {n: p.grad.clone() for n, p in lm.named_parameters() if p.grad is not None}
 
 
+def test_grad_accum():
+    """grad_accum=2 over micro-batches of 2 sequences makes the same optimizer step as one batch of 4 (equal-sized
+    micro-batches: the mean of their mean losses is the batch's mean loss), and steps once per 2 micro-batches."""
+    torch.manual_seed(0)
+    args = small("D3.b1.r1e4")
+    lm = build_language_model(args).double()
+    ids = torch.randint(0, 100, (4, 64))
+    results = []
+    for accum, batches in ((1, [ids]), (2, [ids[:2], ids[2:]])):
+        model = copy.deepcopy(lm)
+        opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        args.grad_accum = accum
+        steps = []
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda k: (steps.append(k), 1.0)[1])
+        single_epoch_lm(model, [{"input_ids": b, "labels": b} for b in batches], {"loss": []}, opt, args, scheduler=sched)
+        results.append((model, len(steps)))
+    (a, n_a), (b, n_b) = results
+    assert n_a == n_b == 2                                    # LambdaLR calls once at construction, once per step
+    err = max((pa - pb).abs().max().item() for pa, pb in zip(a.parameters(), b.parameters()))
+    assert err < 1e-12, err
+
+
 def test_chunked_loss_and_checkpointing_are_exact():
     """LanguageModel.loss (chunked CE) and block checkpointing give the plain path's loss and gradients."""
     torch.manual_seed(0)

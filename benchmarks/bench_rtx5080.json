@@ -1,0 +1,436 @@
+{
+ "gpu": "NVIDIA GeForce RTX 5080",
+ "torch": "2.11.0+cu128",
+ "size": {
+  "layers": 12,
+  "width": 768,
+  "heads": 12
+ },
+ "context": 4096,
+ "models": {
+  "dka": {
+   "a_us_per_token": 2.0630869930945064,
+   "c_pair_ns": 0.17864425987884006,
+   "F_tflops": 37.37787956933191,
+   "layer": [
+    {
+     "kind": "layer",
+     "model": "dka",
+     "N": 512,
+     "batch": 16,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 21.624326705932617,
+     "peak_gb": 1.3046889305114746
+    },
+    {
+     "kind": "layer",
+     "model": "dka",
+     "N": 1024,
+     "batch": 8,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 25.54798126220703,
+     "peak_gb": 1.3137259483337402
+    },
+    {
+     "kind": "layer",
+     "model": "dka",
+     "N": 2048,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 34.86895561218262,
+     "peak_gb": 1.3336329460144043
+    },
+    {
+     "kind": "layer",
+     "model": "dka",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 53.117990493774414,
+     "peak_gb": 1.37455415725708
+    },
+    {
+     "kind": "layer",
+     "model": "dka",
+     "N": 8192,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 88.75632286071777,
+     "peak_gb": 1.4561114311218262
+    }
+   ],
+   "full": [
+    {
+     "kind": "model",
+     "model": "dka",
+     "N": 4096,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 335.6599807739258,
+     "peak_gb": 5.298733711242676,
+     "us_per_token": 81.94823749363422,
+     "F_tflops": 31.42959871194137
+    },
+    {
+     "kind": "model",
+     "model": "dka",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 633.1863403320312,
+     "peak_gb": 7.184159755706787,
+     "us_per_token": 77.29325443506241,
+     "F_tflops": 37.37787956933191
+    },
+    {
+     "kind": "model",
+     "model": "dka",
+     "N": 4096,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 5762.49885559082,
+     "peak_gb": 11.044443130493164,
+     "us_per_token": 351.7150180414319,
+     "F_tflops": 3.074560649821691
+    }
+   ]
+  },
+  "rfa": {
+   "a_us_per_token": 1.9776169427502508,
+   "c_pair_ns": 0.1878373585705342,
+   "F_tflops": 40.13876023587638,
+   "layer": [
+    {
+     "kind": "layer",
+     "model": "rfa",
+     "N": 512,
+     "batch": 16,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 23.200511932373047,
+     "peak_gb": 1.2642836570739746
+    },
+    {
+     "kind": "layer",
+     "model": "rfa",
+     "N": 1024,
+     "batch": 8,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 24.544477462768555,
+     "peak_gb": 1.2733206748962402
+    },
+    {
+     "kind": "layer",
+     "model": "rfa",
+     "N": 2048,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 33.53714942932129,
+     "peak_gb": 1.2935938835144043
+    },
+    {
+     "kind": "layer",
+     "model": "rfa",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 54.113149642944336,
+     "peak_gb": 1.33256196975708
+    },
+    {
+     "kind": "layer",
+     "model": "rfa",
+     "N": 8192,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 92.193603515625,
+     "peak_gb": 1.4152178764343262
+    }
+   ],
+   "full": [
+    {
+     "kind": "model",
+     "model": "rfa",
+     "N": 4096,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 351.881742477417,
+     "peak_gb": 4.859373092651367,
+     "us_per_token": 85.90862853452563,
+     "F_tflops": 30.14295353056895
+    },
+    {
+     "kind": "model",
+     "model": "rfa",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 662.8031730651855,
+     "peak_gb": 6.339916706085205,
+     "us_per_token": 80.90859046205878,
+     "F_tflops": 36.05348007023892
+    },
+    {
+     "kind": "model",
+     "model": "rfa",
+     "N": 4096,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224737,
+     "ms": 1283.0846309661865,
+     "peak_gb": 9.356450080871582,
+     "us_per_token": 78.31327093299478,
+     "F_tflops": 40.13876023587638
+    }
+   ]
+  },
+  "rope": {
+   "a_us_per_token": 0.5893575731718506,
+   "c_pair_ns": 0.05636270741246253,
+   "F_tflops": 53.232291233711116,
+   "layer": [
+    {
+     "kind": "layer",
+     "model": "rope",
+     "N": 512,
+     "batch": 16,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 6.416559219360352,
+     "peak_gb": 0.5441350936889648
+    },
+    {
+     "kind": "layer",
+     "model": "rope",
+     "N": 1024,
+     "batch": 8,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 7.513523101806641,
+     "peak_gb": 0.5443792343139648
+    },
+    {
+     "kind": "layer",
+     "model": "rope",
+     "N": 2048,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 10.519027709960938,
+     "peak_gb": 0.5448675155639648
+    },
+    {
+     "kind": "layer",
+     "model": "rope",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 16.112089157104492,
+     "peak_gb": 0.5458440780639648
+    },
+    {
+     "kind": "layer",
+     "model": "rope",
+     "N": 8192,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 27.56357192993164,
+     "peak_gb": 0.5477972030639648
+    }
+   ],
+   "full": [
+    {
+     "kind": "model",
+     "model": "rope",
+     "N": 4096,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 160.6428623199463,
+     "peak_gb": 4.3739333152771,
+     "us_per_token": 39.21944880858064,
+     "F_tflops": 40.69091231096443
+    },
+    {
+     "kind": "model",
+     "model": "rope",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 292.4478054046631,
+     "peak_gb": 5.656039237976074,
+     "us_per_token": 35.69919499568641,
+     "F_tflops": 48.20108912488369
+    },
+    {
+     "kind": "model",
+     "model": "rope",
+     "N": 4096,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 555.3605556488037,
+     "peak_gb": 8.249105453491211,
+     "us_per_token": 33.896518289111555,
+     "F_tflops": 53.232291233711116
+    }
+   ]
+  },
+  "alibi": {
+   "a_us_per_token": 0.5470760207286262,
+   "c_pair_ns": 0.028429884491987484,
+   "F_tflops": 49.099534832576374,
+   "layer": [
+    {
+     "kind": "layer",
+     "model": "alibi",
+     "N": 512,
+     "batch": 16,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 4.992246627807617,
+     "peak_gb": 0.7328143119812012
+    },
+    {
+     "kind": "layer",
+     "model": "alibi",
+     "N": 1024,
+     "batch": 8,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 5.527019500732422,
+     "peak_gb": 0.7328143119812012
+    },
+    {
+     "kind": "layer",
+     "model": "alibi",
+     "N": 2048,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 8.495092391967773,
+     "peak_gb": 0.732816219329834
+    },
+    {
+     "kind": "layer",
+     "model": "alibi",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 9.545326232910156,
+     "peak_gb": 0.7330718040466309
+    },
+    {
+     "kind": "layer",
+     "model": "alibi",
+     "N": 8192,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "ms": 16.034841537475586,
+     "peak_gb": 0.7336058616638184
+    }
+   ],
+   "full": [
+    {
+     "kind": "model",
+     "model": "alibi",
+     "N": 4096,
+     "batch": 1,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 130.354642868042,
+     "peak_gb": 4.533130168914795,
+     "us_per_token": 31.824863981455564,
+     "F_tflops": 39.22366989778668
+    },
+    {
+     "kind": "model",
+     "model": "alibi",
+     "N": 4096,
+     "batch": 2,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 231.08243942260742,
+     "peak_gb": 5.943882942199707,
+     "us_per_token": 28.208305593580008,
+     "F_tflops": 46.38011673571641
+    },
+    {
+     "kind": "model",
+     "model": "alibi",
+     "N": 4096,
+     "batch": 4,
+     "layers": 12,
+     "width": 768,
+     "heads": 12,
+     "params": 153224017,
+     "ms": 444.17762756347656,
+     "peak_gb": 8.838484764099121,
+     "us_per_token": 27.1104509010911,
+     "F_tflops": 49.099534832576374
+    }
+   ]
+  }
+ }
+}

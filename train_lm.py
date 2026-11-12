@@ -68,6 +68,8 @@ def main():
     p.add_argument("--preset", choices=sorted(PRESETS), required=True)
     p.add_argument("--epochs", type=int, default=None, help="default: the preset's train_epochs, else 15")
     p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--grad-accum", type=int, default=None, help="micro-batches (of --batch-size sequences) per optimizer "
+                   "step; default: the preset's train_grad_accum, else 1")
     p.add_argument("--lr", type=float, default=None, help="default: the preset's train_lr, else 1e-3")
     p.add_argument("--compile", action="store_true", help="torch.compile the backbone (needs Triton; ~1.8x faster RFA)")
     p.add_argument("--grad-checkpointing", action="store_true", help="trade ~30%% speed for much less memory")
@@ -104,6 +106,7 @@ def main():
                      **overrides)
     seed_everything(cli.seed if cli.seed is not None else getattr(args, "train_seed", 2025))
     args.bf16 = cli.bf16 or getattr(args, "train_bf16", False)
+    args.grad_accum = cli.grad_accum or getattr(args, "train_grad_accum", None) or 1
     if cli.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -157,7 +160,7 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-8)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=lr, epochs=epochs, steps_per_epoch=len(loaders["train"]) + 2,
+        optimizer, max_lr=lr, epochs=epochs, steps_per_epoch=-(-len(loaders["train"]) // args.grad_accum) + 2,
         pct_start=0.05, anneal_strategy="cos", div_factor=25.0, final_div_factor=1000.0)
 
     history = {"loss": [], "train_loss": [], "val_loss": [], "val_ppl": [], "epoch_times": []}

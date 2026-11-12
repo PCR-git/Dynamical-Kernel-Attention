@@ -210,6 +210,7 @@ train_lm.py, eval_extrapolation.py, download_data.py   # training, perplexity ag
 evals/                    # evaluations of trained models: eviction, positions, sliding window, paired comparisons,
                           # retrieval, per-head probes, and the MQAR / offset fine-tunes
 figures/                  # the paper figures
+benchmarks/               # GPU benchmark (bench_gpu.py) and training-time / memory calculator (train_time.py)
 dynamics/, visualization/, *.ipynb   # simulators (and dynamics_compare.py), plots and notebooks from the RFA paper
 tests/
 ```

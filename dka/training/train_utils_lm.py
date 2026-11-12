@@ -27,27 +27,31 @@ def _autocast(args):
 def single_epoch_lm(model, train_loader, history, optimizer, args, scheduler=None, log_every=100):
     """
     One epoch of next-token language-model training (RFA or baseline backbone).
-    Appends the loss of every step to history['loss'], and for RFA/DKA models, every `log_every`
+    args.grad_accum micro-batches (default 1) make one optimizer step; the gradient is their mean.
+    Appends the loss of every micro-batch to history['loss'], and for RFA/DKA models, every `log_every`
     steps, the per-head parameters of the last block (history['mu'], ['sigma'], ..., [H] arrays as the
     plotting code expects); for DKA also c_h, zeta and the mean step of every block (history['prior_weight'],
     ['zeta'], ['step'], [n_blocks, H] arrays).
     """
     model.train()
     output_dict = None
+    accum = getattr(args, "grad_accum", 1)          # micro-batches per optimizer step (gradient accumulation)
 
     pbar = tqdm(train_loader, desc="Training", leave=False, mininterval=5.0)
+    optimizer.zero_grad()
     for it, batch in enumerate(pbar):
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)
 
-        optimizer.zero_grad()
         with _autocast(args):
             loss, output_dict = model.loss(input_ids, labels, causal=True)
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        if scheduler:
-            scheduler.step()
+        (loss / accum).backward()
+        if (it + 1) % accum == 0 or it + 1 == len(train_loader):
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            if scheduler:
+                scheduler.step()
 
         history['loss'].append(loss.item())
         if it % 100 == 0:
