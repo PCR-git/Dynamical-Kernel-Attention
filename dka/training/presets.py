@@ -288,6 +288,15 @@ for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
     # the production settings: fused kernels (FlexAttention / flash attention) and bf16 autocast in training
     PRESETS.setdefault(f"{_base}.fx", dict(PRESETS[_base], dka_kernel="flex", train_bf16=True))
 
+# RoPE base at b = 1, at the training lengths 512 and 1024 (20M, WikiText-103, 8 x 1024 tokens per step at 1024, so
+# tokens per step and epochs are unchanged): D3.b1.r<base>[.L1024]. The slowest head's horizon is base^(7/8) (601,
+# 3162, 12940 tokens), i.e. 1.2, 6.2, 25 L at 512 and 0.6, 3.1, 12.6 L at 1024
+for _name, _rb in (("r1500", 1500.0), ("r1e4", 1e4), ("r5e4", 5e4)):
+    _p = dict(PRESETS["D3.b1.r1e4"], rope_base=_rb)
+    if _name != "r1e4":
+        PRESETS.setdefault(f"D3.b1.{_name}", _p)
+    PRESETS.setdefault(f"D3.b1.{_name}.L1024", dict(_p, seq_len=1024, train_batch_size=8))
+
 # The ~120M scale-up on PG-19: 9 layers x 768, 12 heads (124M, embedding tied to the output head), fused kernels and
 # bf16, micro-batches of 8192 tokens accumulated to 262k tokens per optimizer step, learning rate 6e-4, embedding
 # init N(0, 0.02), one pass over PG-19 (3.07B tokens) in 10 parts: <base>.pg<context>. The learning-rate check:
