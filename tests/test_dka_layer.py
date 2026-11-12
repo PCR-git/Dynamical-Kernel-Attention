@@ -521,6 +521,36 @@ def test_two_pass_kernel():
                     close(b.grad, a.grad, 1e-9)
 
 
+def test_flex_kernel_cpu():
+    """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
+    test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has
+    no backward on the CPU; gradients are checked on the GPU)."""
+    import warnings
+    import torch.nn.attention.flex_attention as fa
+    debug = fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG
+    fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = True             # plain eager math (no tracing of the score_mod)
+    try:
+        _flex_cpu_cases()
+    finally:
+        fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = debug
+
+
+def _flex_cpu_cases():
+    import warnings
+    x, t = inputs(N=24)
+    for kw in (dict(temperature=True), dict(robust_weight=False)):
+        for t_m, causal in ((None, True), (t, True), (t, False)):
+            ref = make_layer(**kw)
+            fast = make_layer(kernel="flex", **kw)
+            fast.load_state_dict(ref.state_dict())
+            with torch.no_grad():
+                for m in (ref, fast):
+                    m.sigma_raw.add_(1.0)
+            with warnings.catch_warnings(), torch.no_grad():
+                warnings.simplefilter("ignore")
+                close(fast(x, t_measure=t_m, causal=causal)[0], ref(x, t_measure=t_m, causal=causal)[0], 1e-5)  # flex runs in fp32
+
+
 def test_learn_decay():
     """learn_decay: starts at the coupled decay (the layer equals DKA); heads whose slowest period fits in L are
     covered, may slow down to horizon L but not beyond; the others may only decay faster; beta gets a gradient."""

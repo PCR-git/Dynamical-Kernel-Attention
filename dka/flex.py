@@ -63,13 +63,15 @@ _FLEX, _MASKS = {}, {}
 KERNEL_OPTIONS = None        # FlexAttention kernel_options (block sizes, warps, stages); None = its defaults
 
 
-def _flex_fn(k_pow):
+def _flex_fn(k_pow, device_type="cuda"):
     """
     flex_attention compiled once per pass (eager flex_attention is a slow, unfused reference). Each pass has its own
     compiled function, so that neither sees the other's score_mod or value width: alternating them in one function
     recompiles at every call and, past torch._dynamo's recompile limit, silently falls back to the eager reference.
     """
     from torch.nn.attention.flex_attention import flex_attention
+    if device_type != "cuda":                 # CPU: the unfused reference (slow; for tests)
+        return flex_attention
     if k_pow not in _FLEX:
         torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 64)
         _FLEX[k_pow] = torch.compile(flex_attention, dynamic=False)
@@ -85,12 +87,41 @@ def _causal_mask(N, device):
 
 
 @torch.compiler.disable      # inside a compiled model the flex call does not lower (inductor); it is compiled on its own
+def _two_flex_passes(q, k, v, tpos, q_sq, k_sq, mu, v_inf, s_inf, inv_nu, coef, robust, causal):
+    """The two FlexAttention passes: (o1, lse1, lse2), [B, H, N, ...]. Captured tensors are [B, H, N] (per query row)."""
+    N = q.shape[2]
+
+    def score_mod(k_pow):
+        def mod(score, b, h, qi, kj):
+            lag = tpos[b, qi] - tpos[b, kj]
+            lag = lag.clamp_min(0) if causal else lag.abs()       # partly masked blocks evaluate future pairs too
+            log_E = -mu[b, h, qi] * lag
+            E = torch.exp(log_E)
+            E2 = E * E
+            Sigma = s_inf[b, h, qi] - v_inf[b, h, qi] * E2
+            x = (k_sq[b, h, kj] + E2 * q_sq[b, h, qi] - 2 * E * score.float()).clamp_min(0) * inv_nu[b, h, qi] / Sigma
+            content = -coef[b, h, qi] * (torch.log1p(x) if robust else x)
+            return content - torch.log(Sigma) + k_pow * log_E
+        return mod
+
+    dev = q.device.type
+    mask = _causal_mask(N, q.device) if causal else None
+    opts = {} if KERNEL_OPTIONS is None else {"kernel_options": KERNEL_OPTIONS}
+    with torch.autocast(device_type=dev, enabled=False):
+        o1, lse1 = _flex_fn(1, dev)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0, return_lse=True,
+                                    **opts)
+        _, lse2 = _flex_fn(2, dev)(q, k, v[..., :16].contiguous(), score_mod=score_mod(2), block_mask=mask, scale=1.0,
+                                   return_lse=True, **opts)
+    return o1, lse1, lse2
+
+
 def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     """
     The same two passes through FlexAttention: the weights are never materialized (memory linear in the length).
     Q, K, V_rot are flattened to [B, H, N, 2D] real vectors (Re<Q~, K~> is their dot product). Under bf16 autocast
     q, k, v enter the kernel in bf16, and the squared norms are taken from the same rounded vectors, so that
-    R^2 = |k - E q|^2 stays consistent (no cancellation between rounded and unrounded terms).
+    R^2 = |k - E q|^2 stays consistent (no cancellation between rounded and unrounded terms). Only the two kernel
+    calls are excluded from an enclosing torch.compile; the rest of the update compiles with the model.
     """
     B, N, H, D, _ = Q.shape
     low = torch.is_autocast_enabled(Q.device.type)
@@ -106,32 +137,12 @@ def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     coef = (nu + config.head_dim) / config.head_dim if config.robust_weight else torch.ones_like(nu)
     if tau is not None:
         coef = coef * tau.float()
-    robust = config.robust_weight
     # one copy of each per-head scalar per query row, [B, H, N]: the kernel's backward adds every pair's gradient
-    # into the captured tensor, and with one value per head those additions all collide (5x slower than the rest of
-    # the layer); per-row copies spread them, and autograd sums the copies back to one value per head
+    # into the captured tensor, and with one value per head those additions all collide (7x slower per layer);
+    # per-row copies spread them, and autograd sums the copies back to one value per head
     rows = lambda s: s.view(1, H, 1).expand(B, H, N).contiguous()
-    mu, v_inf, s_inf, inv_nu, coef = (rows(s) for s in (mu, v_inf, s_inf, inv_nu, coef))
-
-    def score_mod(k_pow):
-        def mod(score, b, h, qi, kj):
-            lag = tpos[b, qi] - tpos[b, kj]
-            lag = lag.clamp_min(0) if causal else lag.abs()       # partly masked blocks evaluate future pairs too
-            log_E = -mu[b, h, qi] * lag
-            E = torch.exp(log_E)
-            E2 = E * E
-            Sigma = s_inf[b, h, qi] - v_inf[b, h, qi] * E2
-            x = (k_sq[b, h, kj] + E2 * q_sq[b, h, qi] - 2 * E * score.float()).clamp_min(0) * inv_nu[b, h, qi] / Sigma
-            content = -coef[b, h, qi] * (torch.log1p(x) if robust else x)
-            return content - torch.log(Sigma) + k_pow * log_E
-        return mod
-
-    mask = _causal_mask(N, Q.device) if causal else None
-    opts = {} if KERNEL_OPTIONS is None else {"kernel_options": KERNEL_OPTIONS}
-    with torch.autocast(device_type=Q.device.type, enabled=False):
-        o1, lse1 = _flex_fn(1)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0, return_lse=True, **opts)
-        _, lse2 = _flex_fn(2)(q, k, v[..., :16].contiguous(), score_mod=score_mod(2), block_mask=mask, scale=1.0,
-                              return_lse=True, **opts)
+    o1, lse1, lse2 = _two_flex_passes(q, k, v, tpos, q_sq, k_sq, *(rows(s) for s in (mu, v_inf, s_inf, inv_nu, coef)),
+                                      config.robust_weight, causal)
     o1 = o1.float().transpose(1, 2).reshape(B, N, H, D, 2)
     lse1, lse2 = lse1.float().transpose(1, 2), lse2.float().transpose(1, 2)              # [B, N, H]
     rot = (cos, sin) if config.rotate_values else (None, None)
