@@ -249,8 +249,9 @@ class DKAConfig:
     # window at a cost beyond it that training cannot see. The /10 slows beta's steps under Adam
     learn_decay: bool = False
     # How the update is computed: "explicit" materializes every pair's weight (the reference, with diagnostics);
-    # "two_pass" writes it as two softmax passes (dka/flex.py), the form a fused kernel computes
-    kernel: Literal["explicit", "two_pass"] = "explicit"
+    # "two_pass" writes it as two softmax passes (dka/flex.py), the form a fused kernel computes; "flex" computes
+    # those passes with FlexAttention (GPU; memory linear in the length; no per-pair diagnostics)
+    kernel: Literal["explicit", "two_pass", "flex"] = "explicit"
 
     # --- Numerics ---
     epsilon: float = 1e-5

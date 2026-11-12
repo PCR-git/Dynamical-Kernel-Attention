@@ -58,6 +58,69 @@ def combine(o1, lse1, lse2, null_logit, V, cos=None, sin=None):
     return (M - s[..., None, None] * V) / (n + s)[..., None, None], s / (n + s)
 
 
+_FLEX, _MASKS = {}, {}
+
+
+def _flex_fn(k_pow):
+    """
+    flex_attention compiled once per pass (eager flex_attention is a slow, unfused reference). Each pass has its own
+    compiled function, so that neither sees the other's score_mod or value width: alternating them in one function
+    recompiles at every call and, past torch._dynamo's recompile limit, silently falls back to the eager reference.
+    """
+    if k_pow not in _FLEX:
+        import torch._dynamo
+        from torch.nn.attention.flex_attention import flex_attention
+        torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 64)
+        _FLEX[k_pow] = torch.compile(flex_attention, dynamic=False)
+    return _FLEX[k_pow]
+
+
+def _causal_mask(N, device):
+    key = (N, str(device))
+    if key not in _MASKS:
+        from torch.nn.attention.flex_attention import create_block_mask
+        _MASKS[key] = create_block_mask(lambda b, h, qi, kj: qi >= kj, None, None, N, N, device=device)
+    return _MASKS[key]
+
+
+def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
+    """
+    The same two passes through FlexAttention: the weights are never materialized (memory linear in the length).
+    Q, K, V_rot are flattened to [B, H, N, 2D] real vectors (Re<Q~, K~> is their dot product). Under bf16 autocast
+    q, k, v enter the kernel in bf16, and the squared norms are taken from the same rounded vectors, so that
+    R^2 = |k - E q|^2 stays consistent (no cancellation between rounded and unrounded terms).
+    """
+    B, N, H, D, _ = Q.shape
+    low = torch.is_autocast_enabled(Q.device.type)
+    dtype = torch.get_autocast_dtype(Q.device.type) if low else Q.dtype
+    flat = lambda X: X.flatten(-2).transpose(1, 2).to(dtype).contiguous()          # [B, H, N, 2D]
+    q, k, v = flat(Q), flat(K), flat(V_rot)
+    q_sq, k_sq = q.float().pow(2).sum(-1), k.float().pow(2).sum(-1)               # [B, H, N], from the kernel's q, k
+    tpos = t.to(torch.float32).expand(B, N).contiguous()
+    mu, sig, eta, nu = (p[n].float() for n in ("mu", "sigma_sq", "eta_sq", "nu"))
+    tau_h = tau.float() if tau is not None else None
+    d, robust = config.head_dim, config.robust_weight
+
+    def score_mod(k_pow):
+        def mod(score, b, h, qi, kj):
+            lag = tpos[b, qi] - tpos[b, kj]
+            lag = lag.clamp_min(0) if causal else lag.abs()       # partly masked blocks evaluate future pairs too
+            L, log_E = dka_logit(score.float(), lag, q_sq[b, h, qi], k_sq[b, h, kj], mu[h], sig[h], eta[h], nu[h],
+                                 None if tau_h is None else tau_h[h], d, robust)
+            return L + k_pow * log_E
+        return mod
+
+    mask = _causal_mask(N, Q.device) if causal else None
+    with torch.autocast(device_type=Q.device.type, enabled=False):
+        o1, lse1 = _flex_fn(1)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0, return_lse=True)
+        _, lse2 = _flex_fn(2)(q, k, v[..., :16].contiguous(), score_mod=score_mod(2), block_mask=mask, scale=1.0,
+                              return_lse=True)
+    o1 = o1.float().transpose(1, 2).reshape(B, N, H, D, 2)
+    lse1, lse2 = lse1.float().transpose(1, 2), lse2.float().transpose(1, 2)              # [B, N, H]
+    rot = (cos, sin) if config.rotate_values else (None, None)
+    return combine(o1, lse1, lse2, p["log_prior_precision"].float(), V.float(), *rot)
+
+
 def two_pass_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     """
     The layer's dV (and step) through the two passes, with the weights materialized. p: sde_params(); t: [B|1, N]
