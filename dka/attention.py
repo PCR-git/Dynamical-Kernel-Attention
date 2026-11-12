@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from .config import RFAConfig
 from .init import (inv_softplus, init_complex_matrix, init_complex_linear_,
                    init_rope, init_spectrally_coupled_rope, init_decay_per_head)
+from .flex import rfa_two_pass_update
 from .kernels import rotate, rotation_angles, pairwise_lags, lag_covariance, residual_norm_sq, robust_logits
 
 
@@ -139,6 +140,14 @@ class MultiheadIsotropicRFA(nn.Module):
         V = self._project_in(self.W_v, Z_v)
         V_agg = rotate(V, cos, -sin) if c.rotate_values else V
 
+        if c.kernel != "explicit":                # the two softmax passes (dka.flex)
+            if return_metadata:
+                raise ValueError(f"return_metadata needs kernel='explicit' (got {c.kernel!r})")
+            null = self._null_logit(p) if c.prior == "tokens" else None
+            rot = (cos, sin) if c.rotate_values else (None, None)
+            delta = rfa_two_pass_update(p, t, Q, K, V, V_agg, *rot, c, null, causal)
+            return self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1)), self._param_summary(p)
+
         # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---
         chunk = self.query_chunk if self.query_chunk and not return_metadata and N > self.query_chunk else N
         rows = [self._rows(p, t, Q, K, V, V_agg, cos, sin, i0, min(i0 + chunk, N), causal)
@@ -183,10 +192,7 @@ class MultiheadIsotropicRFA(nn.Module):
             # --- Innovation V_bar - V (or, for checkpoints trained before DKA, the estimate V_bar) ---
             delta = est - V_q if c.output == "innovation" else est
         else:
-            # --- Null slot: the logit of an agreeing lag-0 token plus log c_h (tempered like the logits) ---
-            Sigma0 = p["eta_sq"] + p["gamma_sq"] + c.cov_epsilon                    # lag-0 covariance [H]
-            null_logit = self.log_c + p["tau"] * robust_logits(
-                torch.zeros_like(Sigma0), Sigma0, p["nu"], c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate)
+            null_logit = self._null_logit(p)
             m = torch.maximum(logits.amax(dim=2), null_logit)                          # [B, nq, H]
             A_un = torch.exp(logits - m[:, :, None, :])
             null = torch.exp(null_logit - m)
@@ -199,6 +205,13 @@ class MultiheadIsotropicRFA(nn.Module):
             est = V_q + dV
             delta = dV if c.output == "innovation" else est
         return delta, A, E, Sigma, R_sq, est
+
+    def _null_logit(self, p):
+        """Null slot: the logit of an agreeing lag-0 token plus log c_h (tempered like the logits), [H]."""
+        c = self.config
+        Sigma0 = p["eta_sq"] + p["gamma_sq"] + c.cov_epsilon                        # lag-0 covariance [H]
+        return self.log_c + p["tau"] * robust_logits(
+            torch.zeros_like(Sigma0), Sigma0, p["nu"], c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate)
 
     # ------------------------------------------------------------------
 

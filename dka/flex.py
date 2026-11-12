@@ -19,7 +19,7 @@ weights (the reference for the fused kernel, checked against the layer's own com
 import torch
 import torch._dynamo
 
-from .kernels import cross_dot, rotate
+from .kernels import cross_dot, robust_logits, rotate
 
 
 def _one_minus_exp_ratio(x):
@@ -183,3 +183,60 @@ def two_pass_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     o1 = torch.einsum("bijh,bjhdc->bihdc", torch.softmax(l1, dim=2), V_rot)
     rot = (cos, sin) if config.rotate_values else (None, None)
     return combine(o1, lse1, lse2, p["log_prior_precision"], V, *rot)
+
+
+# ----------------------------------------------------------------------------------------------------------------
+# RFA. Its estimate sum_j softmax(L)_ij E_ij V~_j decays the weights after the softmax, so it is normalized by
+# sum a, not sum a E: pass 1 (logits L + log E, values V~) gives o1 and lse1, pass 2 (logits L) gives lse0, and
+#     est = e^{lse1 - lse0} Phi+ o1                                                    (flat prior)
+#     dV = (w1 Phi+ o1 - s V) / (n + s),  (w1, s, n) = exp((lse1, lse0, null) - max)   (null slot: combine)
+# i.e. DKA's two passes with the powers (1, 0) of E instead of (1, 2).
+# ----------------------------------------------------------------------------------------------------------------
+
+def rfa_logit(cross, lag, q_sq, k_sq, mu, process_var, eta_sq, gamma_sq, nu, tau, config):
+    """
+    RFA's logit L of one query-key pair and log E (broadcastable tensors), as the layer computes them for mu > 0:
+        log E = clamp(-mu lag, min_exponent, max_exponent),   R^2 = |q|^2 + E^2 |k|^2 - 2 E Re<q, k>
+        (-E Re<q, k> without the full norm),   Sigma = v (1 - E^2) + eta^2 E^2 + gamma^2 + cov_eps,
+        v = sigma^2 / (2 mu) ("variance") or sigma~^2 ("steady_state"),   L = tau * robust_logits(R^2, Sigma).
+    Sigma is evaluated as (v + gamma^2 + cov_eps) + (eta^2 - v) E^2, the form a score_mod uses. lag >= 0.
+    """
+    c = config
+    log_E = torch.clamp(-mu * lag, min=c.min_exponent, max=c.max_exponent)
+    E = torch.exp(log_E)
+    E2 = E * E
+    v = process_var / (2 * mu) if c.process_noise == "variance" else process_var
+    Sigma = (v + gamma_sq + c.cov_epsilon) + (eta_sq - v) * E2
+    R_sq = q_sq + E2 * k_sq - 2 * E * cross if c.full_residual_norm else -E * cross
+    return tau * robust_logits(R_sq, Sigma, nu, c.head_dim, c.robust_weight, c.dle_bias, c.dle_gate), log_E
+
+
+def rfa_combine(o1, lse1, lse0, null_logit, V, cos, sin, output):
+    """RFA's output from the two passes: the innovation or the estimate, flat prior (null_logit None) or null slot."""
+    if null_logit is None:
+        est = torch.exp(lse1 - lse0)[..., None, None] * o1
+        if cos is not None:
+            est = rotate(est, cos, sin)
+        return est - V if output == "innovation" else est
+    dV, _ = combine(o1, lse1, lse0, null_logit, V, cos, sin)
+    return dV if output == "innovation" else V + dV
+
+
+def rfa_two_pass_update(p, t, Q, K, V, V_agg, cos, sin, config, null_logit, causal=True):
+    """
+    RFA's delta through the two passes, with the weights materialized (the reference for the fused kernel).
+    p: sde_params(); t: [B|1, N]; Q, K: rotated [B, N, H, D, 2]; V, V_agg: values and aggregated (rotated) values;
+    cos, sin: the counter-rotation when config.rotate_values (else None); null_logit: [H] (prior="tokens") or None.
+    """
+    lag = t[:, :, None] - t[:, None, :]
+    future = lag < 0 if causal else torch.zeros_like(lag, dtype=torch.bool)
+    lag = lag.abs()[..., None]
+    q_sq = Q.pow(2).sum(dim=(-1, -2))[:, :, None]
+    k_sq = K.pow(2).sum(dim=(-1, -2))[:, None]
+    L, log_E = rfa_logit(cross_dot(Q, K), lag, q_sq, k_sq, p["mu"], p["process_var"], p["eta_sq"], p["gamma_sq"],
+                         p["nu"], p["tau"], config)
+    L = L.masked_fill(future[..., None], float("-inf"))
+    l1 = L + log_E
+    lse1, lse0 = torch.logsumexp(l1, dim=2), torch.logsumexp(L, dim=2)
+    o1 = torch.einsum("bijh,bjhdc->bihdc", torch.softmax(l1, dim=2), V_agg)
+    return rfa_combine(o1, lse1, lse0, null_logit, V, cos, sin, config.output)

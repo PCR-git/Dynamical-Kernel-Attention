@@ -521,6 +521,44 @@ def test_two_pass_kernel():
                     close(b.grad, a.grad, 1e-9)
 
 
+def test_rfa_two_pass_kernel():
+    """RFA with kernel='two_pass' (dka/flex.py: pass 1 with logits L + log E, pass 2 with L) equals the explicit
+    update, outputs and every gradient: flat prior and null slot, innovation and estimate, both process-noise forms,
+    exponential weight, the dot-product residual, no DLE bias or gate, unrotated values; regular, irregular and
+    non-causal. damping 5 puts the fast heads' decay exponent on its clamp within the sequence."""
+    x, t = inputs(N=10)
+    cases = [dict(), dict(output="estimate"), dict(prior="tokens"), dict(prior="tokens", output="estimate"),
+             dict(process_noise="steady_state"), dict(robust_weight=False), dict(full_residual_norm=False),
+             dict(dle_bias=False, dle_gate=False), dict(rotate_values=False), dict(prior="tokens", rotate_values=False)]
+    cfg = dict(d_model=D_MODEL, n_heads=H, head_dim=D, frequency_init="spectral", damping=5.0, zero_decay_frac=0.0)
+    for kw in cases:
+        for t_m, causal in ((t, True), (None, True), (t, False)):
+            torch.manual_seed(0)
+            ref = MultiheadIsotropicRFA(RFAConfig(**cfg, **kw)).double()
+            fast = MultiheadIsotropicRFA(RFAConfig(**cfg, kernel="two_pass", **kw)).double()
+            fast.load_state_dict(ref.state_dict())
+            with torch.no_grad():
+                for m in (ref, fast):
+                    m.sigma_raw.add_(1.0)                               # a sizable process noise
+                    m.tau_raw.copy_(torch.tensor([0.3, -0.2, 1.5], dtype=F64))
+                    if kw.get("prior") == "tokens":
+                        m.log_c.copy_(torch.tensor([-1.0, 0.5, 2.0], dtype=F64))
+            o_r, _ = ref(x, t_measure=t_m, causal=causal)
+            o_f, _ = fast(x, t_measure=t_m, causal=causal)
+            close(o_f, o_r, 1e-10)
+            o_r.square().mean().backward()
+            o_f.square().mean().backward()
+            for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                if a.grad is not None:
+                    close(b.grad, a.grad, 1e-9)
+    for bad in (dict(zero_decay_frac=0.25), dict(zero_decay=True)):
+        try:
+            RFAConfig(**{**cfg, **bad}, kernel="two_pass")
+            raise AssertionError(f"kernel='two_pass' with {bad} was accepted")
+        except ValueError:
+            pass
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

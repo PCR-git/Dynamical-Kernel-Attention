@@ -68,9 +68,18 @@ class RFAConfig:
     min_exponent: float = -10.0
     max_exponent: float = 0.0
 
+    # --- Computation: "explicit" (weights materialized, chunked over queries) or "two_pass" (the two softmax passes
+    # of dka.flex, the form of the fused kernel; weights still materialized); mu > 0 in every head ---
+    kernel: Literal["explicit", "two_pass"] = "explicit"
+
     def __post_init__(self):
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
+        if self.kernel not in ("explicit", "two_pass"):
+            raise ValueError(f"kernel must be 'explicit' or 'two_pass', got {self.kernel!r}")
+        if self.kernel != "explicit" and (self.zero_decay or self.zero_decay_frac > 0):
+            raise ValueError("RFA kernels other than 'explicit' need mu > 0 in every head (no zero_decay, "
+                             "zero_decay_frac = 0)")
 
     @classmethod
     def from_args(cls, args, d_model, n_heads, head_dim):
@@ -124,6 +133,7 @@ class RFAConfig:
             epsilon=args.epsilon,
             min_exponent=args.min_exponent,
             max_exponent=args.max_exponent,
+            kernel=getattr(args, "dka_kernel", "explicit"),
         )
 
 
