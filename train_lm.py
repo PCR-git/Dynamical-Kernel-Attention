@@ -71,7 +71,8 @@ def main():
     p.add_argument("--lr", type=float, default=None, help="default: the preset's train_lr, else 1e-3")
     p.add_argument("--compile", action="store_true", help="torch.compile the backbone (needs Triton; ~1.8x faster RFA)")
     p.add_argument("--grad-checkpointing", action="store_true", help="trade ~30%% speed for much less memory")
-    p.add_argument("--bf16", action="store_true", help="bf16 autocast for training and validation (matmuls in bf16; "
+    p.add_argument("--bf16", action="store_true", help="bf16 autocast for training and validation (default: the "
+                   "preset's train_bf16; matmuls in bf16; "
                    "positions, phases, the residual's cross term and the elementwise kernels stay float32)")
     p.add_argument("--tf32", action="store_true", help="TF32 tensor cores for float32 matmuls")
     p.add_argument("--kernel", choices=("explicit", "flex"), default=None, help="how attention is computed; flex = "
@@ -102,7 +103,7 @@ def main():
     args = make_args(cli.preset, device=device, batch_size=cli.batch_size, grad_checkpointing=cli.grad_checkpointing,
                      **overrides)
     seed_everything(cli.seed if cli.seed is not None else getattr(args, "train_seed", 2025))
-    args.bf16 = cli.bf16
+    args.bf16 = cli.bf16 or getattr(args, "train_bf16", False)
     if cli.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True

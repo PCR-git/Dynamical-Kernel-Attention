@@ -285,6 +285,8 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
 for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
     for _k, _seed in (("s2", 2026), ("s3", 2027)):
         PRESETS.setdefault(f"{_base}.{_k}", dict(PRESETS[_base], train_seed=_seed))
+    # the production settings: fused kernels (FlexAttention / flash attention) and bf16 autocast in training
+    PRESETS.setdefault(f"{_base}.fx", dict(PRESETS[_base], dka_kernel="flex", train_bf16=True))
 
 
 def make_args(preset, **overrides):
