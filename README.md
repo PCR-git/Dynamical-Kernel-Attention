@@ -150,6 +150,7 @@ python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/D3__<date>  
 python evals/eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
 python evals/eval_positions.py positions.txt D3=runs/wikitext103/D3__<date>          # perplexity by position at 512, per-head diagnostics
 python evals/eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>   # sliding window vs full context, paired
+python evals/eval_long.py runs/pg19/D3.b1.r1e4.pg4096__<date> ...   # PG-19 test perplexity within books, 4k-32k, same tokens at every length
 ```
 
 Each run writes to `<out-dir>/<dataset>/<name>__<date>/` (`--out-dir` defaults to `$DKA_RUNS_DIR`, else `./runs`):

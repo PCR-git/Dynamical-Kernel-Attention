@@ -67,7 +67,8 @@ def main():
     p.add_argument("--dataset", choices=DATASETS, required=True)
     p.add_argument("--preset", choices=sorted(PRESETS), required=True)
     p.add_argument("--epochs", type=int, default=None, help="default: the preset's train_epochs, else 15")
-    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--batch-size", type=int, default=None, help="sequences per micro-batch; default: the preset's "
+                   "train_batch_size, else 16")
     p.add_argument("--grad-accum", type=int, default=None, help="micro-batches (of --batch-size sequences) per optimizer "
                    "step; default: the preset's train_grad_accum, else 1")
     p.add_argument("--lr", type=float, default=None, help="default: the preset's train_lr, else 1e-3")
@@ -80,11 +81,12 @@ def main():
     p.add_argument("--kernel", choices=("explicit", "flex"), default=None, help="how attention is computed; flex = "
                    "fused kernels, weights never materialized (DKA, RFA: FlexAttention; baselines: flash / memory-efficient "
                    "attention, FlexAttention with a distance bias or null slot); needs CUDA; default explicit")
-    p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published N(0,1)")
+    p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published "
+                   "N(0,1) (default: the preset's train_embed_init_std)")
     p.add_argument("--max-steps", type=int, default=None, help="limit train/eval batches per epoch (quick tests)")
     p.add_argument("--max-tokens", type=float, default=None,
                    help="PG-19: train on this many tokens (e.g. 2e9), a fixed random subset of the blocks, "
-                        "split into --epochs parts; default one full pass (3.07B)")
+                        "split into --epochs parts; default the preset's train_max_tokens, else one full pass (3.07B)")
     p.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="override fields of args")
     p.add_argument("--init-from", default=None, help="start from the weights of a trained run (run name in "
                    "<out-dir>/<dataset>, run directory or .pt; new parameters keep their init); default: the "
@@ -102,7 +104,8 @@ def main():
     overrides = parse_overrides(cli.set)
     if cli.kernel is not None:
         overrides["dka_kernel"] = cli.kernel
-    args = make_args(cli.preset, device=device, batch_size=cli.batch_size, grad_checkpointing=cli.grad_checkpointing,
+    batch_size = cli.batch_size or PRESETS[cli.preset].get("train_batch_size") or 16
+    args = make_args(cli.preset, device=device, batch_size=batch_size, grad_checkpointing=cli.grad_checkpointing,
                      **overrides)
     seed_everything(cli.seed if cli.seed is not None else getattr(args, "train_seed", 2025))
     args.bf16 = cli.bf16 or getattr(args, "train_bf16", False)
@@ -114,13 +117,14 @@ def main():
     epochs = cli.epochs or getattr(args, "train_epochs", None) or 15
     lr = cli.lr or getattr(args, "train_lr", None) or 1e-3
     init_from = cli.init_from or getattr(args, "init_from", None)
+    max_tokens = cli.max_tokens or getattr(args, "train_max_tokens", None)
 
     # --- Data ---
     tokenizer = load_tokenizer()
     if cli.dataset == "pg19":   # one pass over the books (or --max-tokens of them), split into --epochs parts
         loaders = make_pg19_dataloaders(tokenizer, args.seq_len, args.batch_size, epochs, cli.data_dir,
-                                        max_tokens=cli.max_tokens)
-    elif cli.max_tokens is not None:
+                                        max_tokens=max_tokens)
+    elif max_tokens is not None:
         raise ValueError("--max-tokens applies to --dataset pg19 only")
     else:
         lm_datasets = load_lm_datasets(cli.dataset, tokenizer, block_size=args.seq_len, root=cli.data_dir,
@@ -132,7 +136,8 @@ def main():
     print({k: len(v) for k, v in loaders.items()}, "batches per split")
 
     # --- Model, optimizer, schedule ---
-    model = build_language_model(args, embed_init_std=0.02 if cli.small_embed_init else None).to(device)
+    embed_init_std = 0.02 if cli.small_embed_init else getattr(args, "train_embed_init_std", None)
+    model = build_language_model(args, embed_init_std=embed_init_std).to(device)
     print(f"{cli.preset}: {type(model.backbone).__name__}, {count_parameters(model):,} parameters")
     if cli.kernel not in (None, "explicit"):
         from dka import MultiheadIsotropicDKA, MultiheadIsotropicRFA

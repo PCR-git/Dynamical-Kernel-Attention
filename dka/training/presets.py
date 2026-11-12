@@ -288,6 +288,20 @@ for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
     # the production settings: fused kernels (FlexAttention / flash attention) and bf16 autocast in training
     PRESETS.setdefault(f"{_base}.fx", dict(PRESETS[_base], dka_kernel="flex", train_bf16=True))
 
+# The ~120M scale-up on PG-19: 9 layers x 768, 12 heads (124M, embedding tied to the output head), fused kernels and
+# bf16, micro-batches of 8192 tokens accumulated to 262k tokens per optimizer step, learning rate 6e-4, embedding
+# init N(0, 0.02), one pass over PG-19 (3.07B tokens) in 10 parts: <base>.pg<context>. The learning-rate check:
+# <base>.pg<context>.lr<lr>, 300M tokens (a fixed subset of the pass) in 3 parts, same schedule shape
+_PG = dict(d_e=768, d_k_total=768, d_v_total=768, n_heads=12, num_blocks=9, dka_kernel="flex", train_bf16=True,
+           train_grad_accum=32, train_lr=6e-4, train_epochs=10, train_embed_init_std=0.02)
+for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
+    for _ctx in (1024, 4096):
+        _pg = dict(PRESETS[_base], **_PG, seq_len=_ctx, train_batch_size=8192 // _ctx)
+        PRESETS.setdefault(f"{_base}.pg{_ctx}", _pg)
+        for _lr in (3e-4, 6e-4, 1.2e-3):
+            PRESETS.setdefault(f"{_base}.pg{_ctx}.lr{_lr:g}", dict(_pg, train_lr=_lr, train_max_tokens=3e8,
+                                                                    train_epochs=3))
+
 
 def make_args(preset, **overrides):
     """Namespace of BASE_ARGS, updated with PRESETS[preset], then with `overrides`."""
