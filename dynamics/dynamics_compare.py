@@ -20,14 +20,17 @@ References, computed on the test trajectories without training:
               DKA with inflation zeta = m / (v_inf + m). Weights either Gaussian (the layer's rule as
               nu -> infinity) or 1 (pure precision weighting: the composite-likelihood estimate).
 
-    python dynamics_compare.py                                   # writes runs/dynamics_compare/<date>_v2/
-    python dynamics_compare.py --data stationary --test-length 400 --out-dir runs/dynamics_compare/stationary_extrap
+    python dynamics/dynamics_compare.py                                   # writes runs/dynamics_compare/<date>_v2/
+    python dynamics/dynamics_compare.py --data stationary --test-length 400 --out-dir runs/dynamics_compare/stationary_extrap
                                     # stationary data (x0 from the stationary law), trained at length 101, tested
                                     # at 400: positions beyond 101 measure length extrapolation
-    python dynamics_compare.py --steps 300 --seeds 0 --decays 0.01 --models dka   # quick test
-    python dynamics_compare.py --check                           # oracle vs dka.reference
+    python dynamics/dynamics_compare.py --steps 300 --seeds 0 --decays 0.01 --models dka   # quick test
+    python dynamics/dynamics_compare.py --check                           # oracle vs dka.reference
 """
 
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python dynamics/dynamics_compare.py
 import argparse
 import datetime
 import json

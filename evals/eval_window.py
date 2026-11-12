@@ -10,9 +10,12 @@ head (default 512, the training length). Reported on positions L/2..L:
 Pairing on the same blocks removes most of the variance from the text itself, so small differences can be
 judged; the standard error does not include variation across training seeds.
 
-usage: python eval_window.py <out.txt> <name=run_dir> [...] [--length L] [--window W] [--blocks N] [--ref NAME] [--cpu]
-       e.g. python eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>
+usage: python evals/eval_window.py <out.txt> <name=run_dir> [...] [--length L] [--window W] [--blocks N] [--ref NAME] [--cpu]
+       e.g. python evals/eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/eval_window.py
 import math
 import sys
 

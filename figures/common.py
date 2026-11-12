@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+sys.path[:0] = [REPO, os.path.join(REPO, "evals")]   # the repo's packages and the evaluation scripts
 
 from eval_extrapolation import latest_checkpoint  # noqa: E402
 from dka.training.presets import build_language_model  # noqa: E402

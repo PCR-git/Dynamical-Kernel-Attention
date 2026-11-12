@@ -26,14 +26,17 @@ Policies (every head, every layer; lag 0 is always kept):
 The cache size reported is measured: kept keys per head, averaged over heads, layers and queries in 2048-4096.
 dNLL p99 / p99.9: percentiles of the per-token change in NLL from full context, over tokens at positions >= 512.
 
-usage: python eval_eviction.py <out.txt> <name=run_dir> [...] [--blocks N] [--length L] [--cpu]
-       e.g. python eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date> B2=runs/wikitext103/B2__<date>
+usage: python evals/eval_eviction.py <out.txt> <name=run_dir> [...] [--blocks N] [--length L] [--cpu]
+       e.g. python evals/eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date> B2=runs/wikitext103/B2__<date>
 Window sizes for the uniform, stream and h2o policies: SWEEP_W="32,64,128,256,512" (environment variable).
 SWEEP_BOUND_EPS / SWEEP_BOUNDCAP_EPS override the bound / boundcap eps lists; SWEEP_POLICIES="bound,cal" runs only
 those policies (and full context).
 Eviction is applied by masking the logits of the attention modules (DKA, RFA and baselines) in place, so the
 models run unchanged; this measures quality, not memory or speed.
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/eval_eviction.py
 import glob
 import math
 import os

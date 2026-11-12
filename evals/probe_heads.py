@@ -6,8 +6,11 @@ the information S, as in eviction. The change in NLL against full context, over 
 reported in milli-nats per token (mean over test blocks, with its standard error over blocks):
     dNLL > 0   the head's far weight was helping;   dNLL < 0   it was hurting (the far gains came in spite of it).
 
-usage: python probe_heads.py <out.txt> <name=run_dir> [...] [--blocks 32] [--length 4096] [--cut 512] [--bands-only]
+usage: python evals/probe_heads.py <out.txt> <name=run_dir> [...] [--blocks 32] [--length 4096] [--cut 512] [--bands-only]
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/probe_heads.py
 import math
 import sys
 import torch

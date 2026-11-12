@@ -11,9 +11,12 @@ For each model:
   - per head (mean over layers): the learned inverse temperature, if the model has one (RFA, DKA with
     dka_temperature).
 
-usage: python eval_positions.py <out.txt> <name=run_dir> [...] [--length L] [--blocks N] [--cpu]
-       e.g. python eval_positions.py positions.txt D3=runs/wikitext103/D3__<date> M3=runs/wikitext103/M3__<date>
+usage: python evals/eval_positions.py <out.txt> <name=run_dir> [...] [--length L] [--blocks N] [--cpu]
+       e.g. python evals/eval_positions.py positions.txt D3=runs/wikitext103/D3__<date> M3=runs/wikitext103/M3__<date>
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/eval_positions.py
 import math
 import sys
 

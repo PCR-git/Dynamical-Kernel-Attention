@@ -12,8 +12,11 @@ context length are the same in both, so only the presence of the earlier copy di
 A model with a 512-token sliding window (":swa" after the run directory) cannot retrieve beyond D ~ 512 by
 construction; it is the reference for what a model gets without long-range retrieval.
 
-usage: python eval_retrieval.py <out.txt> <name=run_dir[:swa]> [...] [--trials N] [--length L] [--passage P]
+usage: python evals/eval_retrieval.py <out.txt> <name=run_dir[:swa]> [...] [--trials N] [--length L] [--passage P]
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/eval_retrieval.py
 import math
 import sys
 import torch

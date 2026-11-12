@@ -2,8 +2,11 @@
 all 547 blocks), the perplexity ratio of each model to the reference minus one, mean +- standard error over
 blocks, overall and by target position (0-64, 64-256, 256-512).
 
-usage: python eval_paired.py <out.txt> <ref_name=run_dir> <name=run_dir> [...] [--length L] [--cpu]
+usage: python evals/eval_paired.py <out.txt> <ref_name=run_dir> <name=run_dir> [...] [--length L] [--cpu]
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/eval_paired.py
 import math
 import os
 import sys

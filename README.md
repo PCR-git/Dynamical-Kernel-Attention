@@ -147,9 +147,9 @@ lm = LanguageModel(backbone, vocab_size=50257, embed_dim=256)
 python train_lm.py --dataset wikitext103 --preset D3 --compile
 python train_lm.py --dataset wikitext103 --preset D2 --set damping=0.5     # override any args field
 python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/D3__<date>   # test perplexity at L = 512 ... 4096
-python eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
-python eval_positions.py positions.txt D3=runs/wikitext103/D3__<date>          # perplexity by position at 512, per-head diagnostics
-python eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>   # sliding window vs full context, paired
+python evals/eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
+python evals/eval_positions.py positions.txt D3=runs/wikitext103/D3__<date>          # perplexity by position at 512, per-head diagnostics
+python evals/eval_window.py window.txt B1=runs/wikitext103/B1__<date> D3=runs/wikitext103/D3__<date>   # sliding window vs full context, paired
 ```
 
 Each run writes to `<out-dir>/<dataset>/<name>__<date>/` (`--out-dir` defaults to `$DKA_RUNS_DIR`, else `./runs`):
@@ -174,7 +174,7 @@ chunks, so the full logits are never stored, and `--grad-checkpointing` recomput
 
 ## Dynamics experiment
 
-`dynamics_compare.py` trains single DKA and RFA layers on a noisy two-dimensional linear system (embedded in 256
+`dynamics/dynamics_compare.py` trains single DKA and RFA layers on a noisy two-dimensional linear system (embedded in 256
 dimensions) with fresh simulated data at every step, and compares them with the optimal Kalman filter and with
 untrained estimators that use the true dynamics. `--data stationary --test-length 400` tests length extrapolation.
 
@@ -206,8 +206,11 @@ dka/
 ├── model/                # Backbone, LanguageModel; baselines/ holds the baseline attention (presets B1-B10)
 ├── training/             # training loops, datasets, presets
 └── utils/
-train_lm.py, eval_extrapolation.py, eval_eviction.py, eval_positions.py, eval_window.py, download_data.py, dynamics_compare.py
-dynamics/, visualization/, figures/, *.ipynb   # simulators, plots and research notebooks from the RFA paper
+train_lm.py, eval_extrapolation.py, download_data.py   # training, perplexity against length, data download
+evals/                    # evaluations of trained models: eviction, positions, sliding window, paired comparisons,
+                          # retrieval, per-head probes, and the MQAR / offset fine-tunes
+figures/                  # the paper figures
+dynamics/, visualization/, *.ipynb   # simulators (and dynamics_compare.py), plots and notebooks from the RFA paper
 tests/
 ```
 

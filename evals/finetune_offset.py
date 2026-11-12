@@ -12,12 +12,15 @@ Fine-tuning: every pretrained model (or, with --scratch, a fresh one) is trained
 (test-set seeds, before and after fine-tuning): per k, the accuracy, and the share of answers that are the token at a
 neighbouring position k - delta (|delta| = 1, 2, 3..5), i.e. how wide the model's localization is.
 
-usage: python finetune_offset.py <out.txt> <name=run_dir|preset:NAME> [...] [--scratch] [--steps 30000] [--lr 1e-3]
+usage: python evals/finetune_offset.py <out.txt> <name=run_dir|preset:NAME> [...] [--scratch] [--steps 30000] [--lr 1e-3]
            [--batch-size 16] [--queries 8] [--trials 128] [--window 1000] [--patience 4]
 Training runs until the mean loss of a window of steps has not improved by 2% for `patience` windows (or reaches
 1e-3), at most --steps; warmup 200 steps, then constant lr. --scratch trains the architecture from random
 initialization (preset:NAME builds a preset that has no checkpoint).
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/finetune_offset.py
 import math
 import sys
 import time

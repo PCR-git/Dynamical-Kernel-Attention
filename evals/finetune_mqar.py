@@ -13,11 +13,14 @@ gaps from GAPS (beyond 512 is extrapolation), at each N of --eval-pairs; it runs
 after. ":swa" after the run directory evaluates with a 512-token sliding window (as eval_retrieval.py); fine-tuning
 is unaffected, since its sequences fit in the window.
 
-usage: python finetune_mqar.py <out.txt> <name=run_dir[:swa]> [...] [--steps 2000] [--lr 1e-4] [--batch-size 16]
+usage: python evals/finetune_mqar.py <out.txt> <name=run_dir[:swa]> [...] [--steps 2000] [--lr 1e-4] [--batch-size 16]
            [--train-pairs 4,8,16,32] [--eval-pairs 8,32] [--trials 128] [--scratch] [--save]
 --scratch trains the same architecture from random initialization instead of the checkpoint; --save writes the
 fine-tuned weights to <run_dir>/mqar_<N>steps.pt.
 """
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path[:0] = [_ROOT, _os.path.join(_ROOT, "evals")]   # run from the repo root: python evals/finetune_mqar.py
 import math
 import os
 import sys
