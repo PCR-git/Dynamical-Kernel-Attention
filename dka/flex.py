@@ -17,6 +17,7 @@ be clamped at zero there, since partly masked blocks evaluate future pairs too. 
 weights (the reference for the fused kernel, checked against the layer's own computation).
 """
 import torch
+import torch._dynamo
 
 from .kernels import cross_dot, rotate
 
@@ -59,6 +60,7 @@ def combine(o1, lse1, lse2, null_logit, V, cos=None, sin=None):
 
 
 _FLEX, _MASKS = {}, {}
+KERNEL_OPTIONS = None        # FlexAttention kernel_options (block sizes, warps, stages); None = its defaults
 
 
 def _flex_fn(k_pow):
@@ -67,9 +69,8 @@ def _flex_fn(k_pow):
     compiled function, so that neither sees the other's score_mod or value width: alternating them in one function
     recompiles at every call and, past torch._dynamo's recompile limit, silently falls back to the eager reference.
     """
+    from torch.nn.attention.flex_attention import flex_attention
     if k_pow not in _FLEX:
-        import torch._dynamo
-        from torch.nn.attention.flex_attention import flex_attention
         torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 64)
         _FLEX[k_pow] = torch.compile(flex_attention, dynamic=False)
     return _FLEX[k_pow]
@@ -83,6 +84,7 @@ def _causal_mask(N, device):
     return _MASKS[key]
 
 
+@torch.compiler.disable      # inside a compiled model the flex call does not lower (inductor); it is compiled on its own
 def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     """
     The same two passes through FlexAttention: the weights are never materialized (memory linear in the length).
@@ -97,24 +99,39 @@ def flex_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     q, k, v = flat(Q), flat(K), flat(V_rot)
     q_sq, k_sq = q.float().pow(2).sum(-1), k.float().pow(2).sum(-1)               # [B, H, N], from the kernel's q, k
     tpos = t.to(torch.float32).expand(B, N).contiguous()
-    mu, sig, eta, nu = (p[n].float() for n in ("mu", "sigma_sq", "eta_sq", "nu"))
-    tau_h = tau.float() if tau is not None else None
-    d, robust = config.head_dim, config.robust_weight
+    # per-head constants: Sigma_n = (v_inf + eta^2) - v_inf E^2 (mu > 0), content = -coef log(1 + R^2 / (nu Sigma_n))
+    mu, eta, nu = (p[n].float() for n in ("mu", "eta_sq", "nu"))
+    v_inf = p["sigma_sq"].float() / (2 * mu)
+    s_inf, inv_nu = v_inf + eta, 1 / nu
+    coef = (nu + config.head_dim) / config.head_dim if config.robust_weight else torch.ones_like(nu)
+    if tau is not None:
+        coef = coef * tau.float()
+    robust = config.robust_weight
+    # one copy of each per-head scalar per query row, [B, H, N]: the kernel's backward adds every pair's gradient
+    # into the captured tensor, and with one value per head those additions all collide (5x slower than the rest of
+    # the layer); per-row copies spread them, and autograd sums the copies back to one value per head
+    rows = lambda s: s.view(1, H, 1).expand(B, H, N).contiguous()
+    mu, v_inf, s_inf, inv_nu, coef = (rows(s) for s in (mu, v_inf, s_inf, inv_nu, coef))
 
     def score_mod(k_pow):
         def mod(score, b, h, qi, kj):
             lag = tpos[b, qi] - tpos[b, kj]
             lag = lag.clamp_min(0) if causal else lag.abs()       # partly masked blocks evaluate future pairs too
-            L, log_E = dka_logit(score.float(), lag, q_sq[b, h, qi], k_sq[b, h, kj], mu[h], sig[h], eta[h], nu[h],
-                                 None if tau_h is None else tau_h[h], d, robust)
-            return L + k_pow * log_E
+            log_E = -mu[b, h, qi] * lag
+            E = torch.exp(log_E)
+            E2 = E * E
+            Sigma = s_inf[b, h, qi] - v_inf[b, h, qi] * E2
+            x = (k_sq[b, h, kj] + E2 * q_sq[b, h, qi] - 2 * E * score.float()).clamp_min(0) * inv_nu[b, h, qi] / Sigma
+            content = -coef[b, h, qi] * (torch.log1p(x) if robust else x)
+            return content - torch.log(Sigma) + k_pow * log_E
         return mod
 
     mask = _causal_mask(N, Q.device) if causal else None
+    opts = {} if KERNEL_OPTIONS is None else {"kernel_options": KERNEL_OPTIONS}
     with torch.autocast(device_type=Q.device.type, enabled=False):
-        o1, lse1 = _flex_fn(1)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0, return_lse=True)
+        o1, lse1 = _flex_fn(1)(q, k, v, score_mod=score_mod(1), block_mask=mask, scale=1.0, return_lse=True, **opts)
         _, lse2 = _flex_fn(2)(q, k, v[..., :16].contiguous(), score_mod=score_mod(2), block_mask=mask, scale=1.0,
-                              return_lse=True)
+                              return_lse=True, **opts)
     o1 = o1.float().transpose(1, 2).reshape(B, N, H, D, 2)
     lse1, lse2 = lse1.float().transpose(1, 2), lse2.float().transpose(1, 2)              # [B, N, H]
     rot = (cos, sin) if config.rotate_values else (None, None)

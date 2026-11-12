@@ -267,6 +267,8 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
+        if self.kernel == "flex" and (self.zero_decay or self.zero_decay_frac > 0):
+            raise ValueError("kernel='flex' needs mu > 0 in every head (it uses Sigma_n = v_inf (1 - E^2) + eta^2)")
         if self.kernel != "explicit" and (self.weight != "robust" or self.residual != "euclidean"
                                           or self.inflation is not None or self.saturation is not None
                                           or self.flat_precision or self.test_scale != "sigma_n"
