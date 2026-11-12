@@ -274,6 +274,10 @@ for _tag, _b in (("b1", 1.0), ("b05", 0.5)):
     PRESETS.setdefault(f"B10.{_tag}.r1e4.I", dict(_b5, baseline_output="innovation", baseline_null=True))  # B5 + null V_i
     for _x, _s in (("x05", 0.5), ("x2", 2.0)):
         PRESETS.setdefault(f"B10.{_tag}.r1e4.{_x}", dict(_b5, use_softmax_one=True, bias_slope_scale=_s))
+    # Spectral coupling in RoPE with DKA's innovation output (against B1.I, RoPE + innovation): B5.<b>.r1e4.nobias.I has the
+    # spectrally coupled frequencies (each head a band of RoPE's) and no decay; B5.<b>.r1e4.I adds the decay bias
+    PRESETS.setdefault(f"B5.{_tag}.r1e4.nobias.I", dict(_b5, bias_slope_scale=0.0, baseline_output="innovation"))
+    PRESETS.setdefault(f"B5.{_tag}.r1e4.I", dict(_b5, baseline_output="innovation"))
 
 # More seeds of the headline models (the published runs use seed 2025): <preset>.s2 and .s3 train with 2026 and 2027
 for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
