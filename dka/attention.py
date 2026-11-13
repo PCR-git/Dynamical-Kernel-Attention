@@ -148,6 +148,9 @@ class MultiheadIsotropicRFA(nn.Module):
             if c.kernel == "blocked":
                 from .fused_reference import rfa_blocked_update
                 update = rfa_blocked_update
+            elif c.kernel == "triton":
+                from .fused import rfa_triton_update                # imports Triton only when used
+                update = rfa_triton_update
             else:
                 update = rfa_flex_update if c.kernel == "flex" else rfa_two_pass_update
             delta = update(p, t, Q, K, V, V_agg, *rot, c, null, causal)

@@ -1063,3 +1063,35 @@ class FusedRFALean(torch.autograd.Function):
         dq, dk, dv, dmu, dkappa = rfa_backward(q, k, v, t, mu, kappa, lo, o, lse1, lse0, do.to(o.dtype), dlse1, dlse0,
                                                causal, need_mu=need_mu)
         return dq, dk, dv, None, dmu.to(mu.dtype) if need_mu else None, dkappa.to(kappa.dtype), None, None
+
+
+
+@torch.compiler.disable      # as _lean_call
+def _rfa_lean_call(q, k, v, t, mu, kappa, lo, causal):
+    return FusedRFALean.apply(q, k, v, t, mu, kappa, lo, causal)
+
+
+def rfa_triton_update(p, t, Q, K, V, V_agg, cos, sin, config, null_logit, causal=True):
+    """
+    The lean RFA's delta through the fused kernel (rfa_two_pass_update's interface): kappa = tau / (nu Sigma_0) in the
+    kernel and the constant -tau log Sigma_0 added to both log-sum-exps (Sigma_0 = eta^2 + gamma^2 + cov_eps) before
+    rfa_combine. q, k, v enter the kernel in the autocast dtype; everything else is float32.
+    """
+    from .flex import rfa_combine
+    B, N, H, D, _ = Q.shape
+    if 2 * D < 16 or (2 * D) & (2 * D - 1):
+        raise ValueError(f"kernel='triton' needs 2 head_dim >= 16 and a power of two, got head_dim={D}")
+    low = torch.is_autocast_enabled(Q.device.type)
+    dtype = torch.get_autocast_dtype(Q.device.type) if low else Q.dtype
+    f32 = torch.promote_types(dtype, torch.float32)
+    flat = lambda X: X.flatten(-2).transpose(1, 2).to(dtype).contiguous()          # [B, H, N, 2D]
+    q, k, v = flat(Q), flat(K), flat(V_agg)
+    sigma0 = (p["eta_sq"] + p["gamma_sq"] + config.cov_epsilon).to(f32)
+    tau = p["tau"].to(f32)
+    kappa = tau / (p["nu"].to(f32) * sigma0)
+    o1, lse1, lse0 = _rfa_lean_call(q, k, v, t.to(torch.float32), p["mu"].to(f32), kappa, config.min_exponent, causal)
+    shift = -tau * torch.log(sigma0)                                                 # [H]
+    o1 = o1.to(f32).transpose(1, 2).reshape(B, N, H, D, 2)
+    lse1, lse0 = lse1.transpose(1, 2) + shift, lse0.transpose(1, 2) + shift          # [B, N, H]
+    null = None if null_logit is None else null_logit.to(f32)
+    return rfa_combine(o1, lse1, lse0, null, V.to(f32), cos, sin, config.output)

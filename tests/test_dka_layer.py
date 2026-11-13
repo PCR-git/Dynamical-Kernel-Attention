@@ -858,6 +858,43 @@ def test_rfa_lean_backward_gpu():
             close(a.grad.double().cpu() / r.grad.abs().max(), r.grad / r.grad.abs().max(), 1e-5)
 
 
+def test_rfa_triton_layer_gpu():
+    """RFA with kernel='triton' (lean: flat precision, exponential weight) equals the explicit lean RFA in float32,
+    outputs and every parameter gradient: flat prior and null slot, estimate and innovation; regular, irregular and
+    non-causal; the decay clamp active (damping 5); head_dim 16 (the kernel needs 2 head_dim >= 16, a power of two).
+    GPU only (skipped without one)."""
+    try:
+        assert torch.cuda.device_count() > 0
+        import dka.fused  # noqa: F401
+    except Exception:
+        print("        (skipped: no GPU or Triton)")
+        return
+    lean = dict(d_model=D_MODEL, n_heads=H, head_dim=16, frequency_init="spectral", damping=5.0, zero_decay_frac=0.0,
+                flat_precision=True, robust_weight=False)
+    x, t = inputs(N=150)
+    x, t = x.float().cuda(), t.float().cuda()
+    for kw in (dict(output="estimate"), dict(prior="tokens")):
+        for t_m, causal in ((None, True), (t, True), (t, False)):
+            torch.manual_seed(0)
+            ref = MultiheadIsotropicRFA(RFAConfig(**lean, **kw)).cuda()
+            fast = MultiheadIsotropicRFA(RFAConfig(**lean, **kw, kernel="triton")).cuda()
+            fast.load_state_dict(ref.state_dict())
+            with torch.no_grad():
+                for m in (ref, fast):
+                    m.tau_raw.copy_(torch.tensor([0.3, -0.2, 1.5]))
+                    if kw.get("prior") == "tokens":
+                        m.log_c.copy_(torch.tensor([-1.0, 0.5, 2.0]))
+            o_r, _ = ref(x, t_measure=t_m, causal=causal)
+            o_f, _ = fast(x, t_measure=t_m, causal=causal)
+            close(o_f.double(), o_r.double(), 2e-5)
+            o_r.square().mean().backward()
+            o_f.square().mean().backward()
+            for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                if a.grad is not None:
+                    close(b.grad.double() / a.grad.abs().max().clamp_min(1e-12),
+                          a.grad.double() / a.grad.abs().max().clamp_min(1e-12), 1e-4)
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has
