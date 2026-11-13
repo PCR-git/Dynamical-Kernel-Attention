@@ -301,12 +301,13 @@ for _name, _rb in (("r1500", 1500.0), ("r1e4", 1e4), ("r5e4", 5e4)):
     PRESETS.setdefault(f"D3.b1.{_name}.L1024", dict(_p, seq_len=1024, train_batch_size=8))
 PRESETS.setdefault("B1.L1024", dict(PRESETS["B1"], seq_len=1024, train_batch_size=8))   # RoPE at 1024, the reference
 
-# The ~120M scale-up on PG-19: 9 layers x 768, 12 heads (124M, embedding tied to the output head), fused kernels (DKA:
+# The scale-up on PG-19: 12 layers x 768, 12 heads (153M, embedding tied to the output head; about 20 tokens per
+# parameter for one pass), fused kernels (DKA:
 # the lean variant, flat precision and the exponential weight, through dka/fused.py; the others: dka_kernel="flex") and
 # bf16, micro-batches of 8192 tokens accumulated to 262k tokens per optimizer step, learning rate 6e-4, embedding
 # init N(0, 0.02), one pass over PG-19 (3.07B tokens) in 10 parts: <base>.pg<context>. The learning-rate check:
 # <base>.pg<context>.lr<lr>, 300M tokens (a fixed subset of the pass) in 3 parts, same schedule shape
-_PG = dict(d_e=768, d_k_total=768, d_v_total=768, n_heads=12, num_blocks=9, dka_kernel="flex", train_bf16=True,
+_PG = dict(d_e=768, d_k_total=768, d_v_total=768, n_heads=12, num_blocks=12, dka_kernel="flex", train_bf16=True,
            train_grad_accum=32, train_lr=6e-4, train_epochs=10, train_embed_init_std=0.02)
 for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
     for _ctx in (1024, 4096):
