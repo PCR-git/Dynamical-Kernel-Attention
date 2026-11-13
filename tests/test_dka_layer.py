@@ -649,6 +649,35 @@ def test_blocked_gradcheck():
             assert torch.autograd.gradcheck(fn, args, eps=1e-6, atol=1e-7, rtol=1e-5), (robust, causal)
 
 
+def test_fused_forward_gpu():
+    """The Triton forward (dka/fused.py) against the blocked reference in float32: Student-t and exponential weight,
+    causal and not, regular and irregular positions, a length that is not a multiple of the block size. GPU only
+    (skipped without one)."""
+    try:
+        assert torch.cuda.device_count() > 0
+        torch.zeros(1, device="cuda")
+        from dka.fused import fused_forward
+    except Exception:
+        print("        (skipped: no GPU or Triton)")
+        return
+    from dka.fused_reference import blocked_forward
+    g = torch.Generator().manual_seed(0)
+    B, H, N = 2, 3, 150
+    consts = [torch.tensor(c, dtype=torch.float32) for c in
+              ([0.1, 0.5, 0.9], [0.4, 1.0, 0.7], [0.9, 1.6, 1.4], [0.1, 0.3, 0.2], [1.2, 0.6, 0.9])]
+    q, k, v = (0.4 * torch.randn(B, H, N, 32, generator=g) for _ in range(3))
+    for t in (torch.arange(N, dtype=torch.float32)[None], torch.cumsum(0.4 + torch.rand(B, N, generator=g), 1)):
+        for robust in (True, False):
+            for causal in (True, False):
+                ref = blocked_forward(q.double(), k.double(), v.double(), t.double(),
+                                      [c.double().view(1, -1, 1, 1) for c in consts], robust, causal)
+                qd, kd, vd, td = (x.cuda() for x in (q, k, v, t))
+                out = fused_forward(qd, kd, vd, td, qd.pow(2).sum(-1), kd.pow(2).sum(-1),
+                                    [c.cuda() for c in consts], robust, causal)
+                for a, r in zip(out, ref):
+                    close(a.double().cpu(), r, 2e-6)
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has
