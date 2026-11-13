@@ -591,6 +591,64 @@ def test_rfa_flex_kernel_cpu():
         fa._FLEX_ATTENTION_DISABLE_COMPILE_DEBUG = debug
 
 
+def test_blocked_reference():
+    """kernel='blocked' (dka/fused_reference.py: the fused kernel's one-pass forward, tile by tile, and its
+    hand-written backward) equals the explicit update, outputs and every gradient, with block sizes that do not divide
+    the length (partial tiles, diagonal tiles straddling the causal mask)."""
+    import dka.fused_reference as fr
+    x, t = inputs(N=10)
+    cases = [dict(), dict(robust_weight=False), dict(temperature=True), dict(output="estimate"),
+             dict(rotate_values=False), dict(prior="none"), dict(learn_decay=True)]
+    blocks = (fr.BLOCK_M, fr.BLOCK_N)
+    try:
+        for (bm, bn) in ((4, 3), (3, 5), (16, 16)):
+            fr.BLOCK_M, fr.BLOCK_N = bm, bn
+            for kw in cases:
+                for t_m, causal in ((t, True), (None, True), (t, False)):
+                    ref = make_layer(**kw)
+                    fast = make_layer(kernel="blocked", **kw)
+                    fast.load_state_dict(ref.state_dict())
+                    with torch.no_grad():
+                        for m in (ref, fast):
+                            m.sigma_raw.add_(1.0)                       # a sizable forcing
+                            if m.log_tau is not None:
+                                m.log_tau.copy_(torch.tensor([0.3, -0.2, 0.5], dtype=F64))
+                    o_r, i_r = ref(x, t_measure=t_m, causal=causal)
+                    o_f, i_f = fast(x, t_measure=t_m, causal=causal)
+                    close(o_f, o_r, 1e-10)
+                    close(i_f["step_mean"], i_r["step_mean"], 1e-10)
+                    o_r.square().mean().backward()
+                    o_f.square().mean().backward()
+                    for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                        if a.grad is not None:
+                            close(b.grad, a.grad, 1e-9)
+    finally:
+        fr.BLOCK_M, fr.BLOCK_N = blocks
+
+
+def test_blocked_gradcheck():
+    """The hand-written backward of BlockedDKA against finite differences, for all three outputs (o1, lse1, lse2)
+    and every differentiable input (q, k, v and the five per-head constants), Student-t and exponential weight,
+    causal and not, irregular positions."""
+    from dka.fused_reference import BlockedDKA
+    g = torch.Generator().manual_seed(3)
+    B, H, N, D2, Dv = 1, 2, 7, 4, 3
+    q, k, v = (0.5 * torch.randn(B, H, N, n, generator=g, dtype=F64) for n in (D2, D2, Dv))
+    t = torch.cumsum(0.4 + torch.rand(B, N, generator=g, dtype=F64), 1)
+    mu = torch.tensor([0.3, 0.8], dtype=F64)
+    v_inf = torch.tensor([0.5, 1.2], dtype=F64)
+    s_inf = v_inf + torch.tensor([0.4, 0.3], dtype=F64)
+    inv_nu = torch.tensor([0.7, 0.2], dtype=F64)
+    coef = torch.tensor([1.3, 0.6], dtype=F64)
+    inputs_ = [q, k, v, mu, v_inf, s_inf, inv_nu, coef]
+    for robust in (True, False):
+        for causal in (True, False):
+            args = [x.clone().requires_grad_() for x in inputs_]
+            fn = lambda q, k, v, mu, v_inf, s_inf, inv_nu, coef: BlockedDKA.apply(
+                q, k, v, t, mu, v_inf, s_inf, inv_nu, coef, robust, causal, 3, 2)
+            assert torch.autograd.gradcheck(fn, args, eps=1e-6, atol=1e-7, rtol=1e-5), (robust, causal)
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

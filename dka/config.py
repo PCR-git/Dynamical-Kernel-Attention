@@ -261,8 +261,9 @@ class DKAConfig:
     learn_decay: bool = False
     # How the update is computed: "explicit" materializes every pair's weight (the reference, with diagnostics);
     # "two_pass" writes it as two softmax passes (dka/flex.py), the form a fused kernel computes; "flex" computes
-    # those passes with FlexAttention (GPU; memory linear in the length; no per-pair diagnostics)
-    kernel: Literal["explicit", "two_pass", "flex"] = "explicit"
+    # those passes with FlexAttention (GPU; memory linear in the length; no per-pair diagnostics); "blocked" is the
+    # fused kernel's reference (dka/fused_reference.py: one pass, tile by tile, hand-written backward; slow)
+    kernel: Literal["explicit", "two_pass", "flex", "blocked"] = "explicit"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -278,8 +279,9 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
-        if self.kernel == "flex" and (self.zero_decay or self.zero_decay_frac > 0):
-            raise ValueError("kernel='flex' needs mu > 0 in every head (it uses Sigma_n = v_inf (1 - E^2) + eta^2)")
+        if self.kernel in ("flex", "blocked") and (self.zero_decay or self.zero_decay_frac > 0):
+            raise ValueError(f"kernel={self.kernel!r} needs mu > 0 in every head (it uses Sigma_n = v_inf (1 - E^2) "
+                             "+ eta^2)")
         if self.kernel != "explicit" and (self.weight != "robust" or self.residual != "euclidean"
                                           or self.inflation is not None or self.saturation is not None
                                           or self.flat_precision or self.test_scale != "sigma_n"
