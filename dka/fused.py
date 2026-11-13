@@ -764,3 +764,302 @@ def rfa_forward(q, k, v, t, q_sq, k_sq, mu, kappa, lo, causal, config=None):
         config = _TUNED_RFA[key]
     launch(config)
     return o, lse1, lse0
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Lean RFA backward pass (formulas in fused_reference): P0 = e^{L - lse0}, P1 = P0 E e^{lse0 - lse1},
+#   G_w1 = P1 (dO . v - D + dlse1),  G_L = G_w1 + dlse0 P0,  G_R2 = -kappa G_L (0 where R^2 was clamped),
+#   G_s = -2 E G_R2,  d|q|^2 = sum_j G_R2,  d|k|^2 = sum_i G_R2 E^2,  dkappa = -sum G_L R^2,
+#   dmu = -sum (G_w1 + E G_R2 (2 E |k|^2 - 2 s)) lag over pairs whose log E is not clamped.
+# Two kernels as for DKA: dK, dV, d|k|^2 and the per-head partials by key block; dQ, d|q|^2 by query block.
+# ---------------------------------------------------------------------------------------------------------------------
+
+@triton.jit
+def _rfa_bwd_core(q, k, v, do, q_sq, k_sq, t_q, t_k, lse0, r01, dlse1, dlse0, dd, offs_m, offs_n, N, mu2, kappa,
+                  e_lo, CAUSAL: tl.constexpr, MASK: tl.constexpr, IEEE: tl.constexpr):
+    """One tile of the lean RFA backward: p0, p1, g_w1, g_l, g_r2, g_s, E, R^2, s, lag, free."""
+    if IEEE:
+        s = tl.dot(q, tl.trans(k), input_precision="ieee")
+        dp = tl.dot(do, tl.trans(v), input_precision="ieee")
+    else:
+        s = tl.dot(q, tl.trans(k))
+        dp = tl.dot(do, tl.trans(v))
+    lag = t_q[:, None] - t_k[None, :]
+    lag = tl.maximum(lag, 0.0) if CAUSAL else tl.abs(lag)
+    e_raw = tl.exp2(-mu2 * lag)
+    free = e_raw >= e_lo                                                     # log E not on its clamp
+    e = tl.maximum(e_raw, e_lo)
+    r2 = q_sq[:, None] + e * e * k_sq[None, :] - 2.0 * e * s
+    kept = r2 > 0.0
+    r2 = tl.where(kept, r2, 0.0)
+    w = -(kappa * 1.4426950408889634) * r2
+    if MASK:
+        keep = (offs_n[None, :] < N) & (offs_m[:, None] < N)
+        if CAUSAL:
+            keep = keep & (offs_m[:, None] >= offs_n[None, :])
+        w = tl.where(keep, w, float("-inf"))
+    p0 = tl.exp2(w - lse0[:, None])
+    p1 = p0 * e * r01[:, None]
+    g_w1 = p1 * (dp - dd[:, None] + dlse1[:, None])
+    g_l = g_w1 + dlse0[:, None] * p0
+    g_r2 = tl.where(kept, -kappa * g_l, 0.0)
+    g_s = -2.0 * e * g_r2
+    return p1, g_w1, g_l, g_r2, g_s, e, r2, s, lag, free
+
+
+@triton.jit
+def _rfa_bwd_dkdv_block(dk, dv, dk_sq, p_mu, p_kappa, start_m, Q, DO, QSQ, T, LSE1, LSE0, DLSE1, DLSE0, DD,
+                        q_base, do_base, n_base, t_base, sqn, sdn, k, v, k_sq, t_k, offs_n, N, mu2, kappa, e_lo,
+                        D2: tl.constexpr, DVD: tl.constexpr, BLOCK_M: tl.constexpr, CAUSAL: tl.constexpr,
+                        MASK: tl.constexpr, IEEE: tl.constexpr, NEED_MU: tl.constexpr):
+    offs_m = start_m + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    row_ok = offs_m < N
+    q = tl.load(Q + q_base + offs_m[:, None] * sqn + offs_d[None, :], mask=row_ok[:, None], other=0.0)
+    do = tl.load(DO + do_base + offs_m[:, None] * sdn + offs_v[None, :], mask=row_ok[:, None], other=0.0)
+    q_sq = tl.load(QSQ + n_base + offs_m, mask=row_ok, other=0.0)
+    t_q = tl.load(T + t_base + offs_m, mask=row_ok, other=0.0)
+    lse1 = tl.load(LSE1 + n_base + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    lse0 = tl.load(LSE0 + n_base + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    dlse1 = tl.load(DLSE1 + n_base + offs_m, mask=row_ok, other=0.0)
+    dlse0 = tl.load(DLSE0 + n_base + offs_m, mask=row_ok, other=0.0)
+    dd = tl.load(DD + n_base + offs_m, mask=row_ok, other=0.0)
+    r01 = tl.exp2(lse0 - lse1)
+    p1, g_w1, g_l, g_r2, g_s, e, r2, s, lag, free = _rfa_bwd_core(
+        q, k, v, do, q_sq, k_sq, t_q, t_k, lse0, r01, dlse1, dlse0, dd, offs_m, offs_n, N, mu2, kappa, e_lo,
+        CAUSAL, MASK, IEEE)
+    if IEEE:
+        dv += tl.dot(tl.trans(p1), do, input_precision="ieee")
+        dk += tl.dot(tl.trans(g_s), q, input_precision="ieee")
+    else:
+        dv += tl.dot(tl.trans(p1.to(do.dtype)), do)
+        dk += tl.dot(tl.trans(g_s.to(q.dtype)), q)
+    dk_sq += tl.sum(g_r2 * e * e, 0)
+    p_kappa += tl.sum(-g_l * r2, 0)
+    if NEED_MU:
+        g_loge = g_w1 + e * g_r2 * (2.0 * e * k_sq[None, :] - 2.0 * s)
+        p_mu += tl.sum(tl.where(free, -g_loge * lag, 0.0), 0)
+    return dk, dv, dk_sq, p_mu, p_kappa
+
+
+@triton.jit
+def _rfa_bwd_dkdv(Q, K, V, T, QSQ, KSQ, DO, LSE1, LSE0, DLSE1, DLSE0, DD, MU, KAPPA,
+                  DK, DV, DKSQ, PMU, PKAPPA,
+                  sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sdb, sdh, sdn, stb, H, N, NKB, e_lo,
+                  D2: tl.constexpr, DVD: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                  CAUSAL: tl.constexpr, IEEE: tl.constexpr, NEED_MU: tl.constexpr):
+    pid_n = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // H
+    h = bh % H
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    col_ok = offs_n < N
+    k = tl.load(K + b * skb + h * skh + offs_n[:, None] * skn + offs_d[None, :], mask=col_ok[:, None], other=0.0)
+    v = tl.load(V + b * svb + h * svh + offs_n[:, None] * svn + offs_v[None, :], mask=col_ok[:, None], other=0.0)
+    k_sq = tl.load(KSQ + bh * N + offs_n, mask=col_ok, other=0.0)
+    t_k = tl.load(T + b * stb + offs_n, mask=col_ok, other=0.0)
+    mu2 = tl.load(MU + h) * 1.4426950408889634
+    kappa = tl.load(KAPPA + h)
+    q_base, do_base, n_base, t_base = b * sqb + h * sqh, b * sdb + h * sdh, bh * N, b * stb
+    dk = tl.zeros([BLOCK_N, D2], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, DVD], dtype=tl.float32)
+    dk_sq = tl.zeros([BLOCK_N], dtype=tl.float32)
+    p_mu = tl.zeros([BLOCK_N], dtype=tl.float32)
+    p_kappa = tl.zeros([BLOCK_N], dtype=tl.float32)
+    n0 = pid_n * BLOCK_N
+    if CAUSAL and n0 + BLOCK_N <= N:
+        lo = (n0 // BLOCK_M) * BLOCK_M
+        diag_end = tl.minimum(((n0 + BLOCK_N + BLOCK_M - 1) // BLOCK_M) * BLOCK_M, N)
+        for start_m in range(lo, diag_end, BLOCK_M):
+            dk, dv, dk_sq, p_mu, p_kappa = _rfa_bwd_dkdv_block(
+                dk, dv, dk_sq, p_mu, p_kappa, start_m, Q, DO, QSQ, T, LSE1, LSE0, DLSE1, DLSE0, DD, q_base, do_base,
+                n_base, t_base, sqn, sdn, k, v, k_sq, t_k, offs_n, N, mu2, kappa, e_lo, D2, DVD, BLOCK_M, CAUSAL,
+                True, IEEE, NEED_MU)
+        for start_m in range(diag_end, N, BLOCK_M):
+            dk, dv, dk_sq, p_mu, p_kappa = _rfa_bwd_dkdv_block(
+                dk, dv, dk_sq, p_mu, p_kappa, start_m, Q, DO, QSQ, T, LSE1, LSE0, DLSE1, DLSE0, DD, q_base, do_base,
+                n_base, t_base, sqn, sdn, k, v, k_sq, t_k, offs_n, N, mu2, kappa, e_lo, D2, DVD, BLOCK_M, CAUSAL,
+                False, IEEE, NEED_MU)
+    else:
+        lo = (n0 // BLOCK_M) * BLOCK_M if CAUSAL else 0
+        for start_m in range(lo, N, BLOCK_M):
+            dk, dv, dk_sq, p_mu, p_kappa = _rfa_bwd_dkdv_block(
+                dk, dv, dk_sq, p_mu, p_kappa, start_m, Q, DO, QSQ, T, LSE1, LSE0, DLSE1, DLSE0, DD, q_base, do_base,
+                n_base, t_base, sqn, sdn, k, v, k_sq, t_k, offs_n, N, mu2, kappa, e_lo, D2, DVD, BLOCK_M, CAUSAL,
+                True, IEEE, NEED_MU)
+    tl.store(DK + b * skb + h * skh + offs_n[:, None] * skn + offs_d[None, :], dk.to(DK.dtype.element_ty),
+             mask=col_ok[:, None])
+    tl.store(DV + b * svb + h * svh + offs_n[:, None] * svn + offs_v[None, :], dv.to(DV.dtype.element_ty),
+             mask=col_ok[:, None])
+    tl.store(DKSQ + bh * N + offs_n, dk_sq, mask=col_ok)
+    tl.store(PMU + bh * NKB + pid_n, tl.sum(tl.where(col_ok, p_mu, 0.0), 0))
+    tl.store(PKAPPA + bh * NKB + pid_n, tl.sum(tl.where(col_ok, p_kappa, 0.0), 0))
+
+
+@triton.jit
+def _rfa_bwd_dq_block(dq, dq_sq, start_n, K, V, KSQ, T, k_base, v_base, n_base, t_base, skn, svn, q, do, q_sq, t_q,
+                      lse0, r01, dlse1, dlse0, dd, offs_m, N, mu2, kappa, e_lo,
+                      D2: tl.constexpr, DVD: tl.constexpr, BLOCK_N: tl.constexpr, CAUSAL: tl.constexpr,
+                      MASK: tl.constexpr, IEEE: tl.constexpr):
+    offs_n = start_n + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    col_ok = offs_n < N
+    k = tl.load(K + k_base + offs_n[:, None] * skn + offs_d[None, :], mask=col_ok[:, None], other=0.0)
+    v = tl.load(V + v_base + offs_n[:, None] * svn + offs_v[None, :], mask=col_ok[:, None], other=0.0)
+    k_sq = tl.load(KSQ + n_base + offs_n, mask=col_ok, other=0.0)
+    t_k = tl.load(T + t_base + offs_n, mask=col_ok, other=0.0)
+    p1, g_w1, g_l, g_r2, g_s, e, r2, s, lag, free = _rfa_bwd_core(
+        q, k, v, do, q_sq, k_sq, t_q, t_k, lse0, r01, dlse1, dlse0, dd, offs_m, offs_n, N, mu2, kappa, e_lo,
+        CAUSAL, MASK, IEEE)
+    if IEEE:
+        dq += tl.dot(g_s, k, input_precision="ieee")
+    else:
+        dq += tl.dot(g_s.to(k.dtype), k)
+    dq_sq += tl.sum(g_r2, 1)
+    return dq, dq_sq
+
+
+@triton.jit
+def _rfa_bwd_dq(Q, K, V, T, QSQ, KSQ, DO, LSE1, LSE0, DLSE1, DLSE0, DD, MU, KAPPA, DQ, DQSQ,
+                sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sdb, sdh, sdn, stb, H, N, e_lo,
+                D2: tl.constexpr, DVD: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                CAUSAL: tl.constexpr, IEEE: tl.constexpr):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // H
+    h = bh % H
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    row_ok = offs_m < N
+    q = tl.load(Q + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], mask=row_ok[:, None], other=0.0)
+    do = tl.load(DO + b * sdb + h * sdh + offs_m[:, None] * sdn + offs_v[None, :], mask=row_ok[:, None], other=0.0)
+    q_sq = tl.load(QSQ + bh * N + offs_m, mask=row_ok, other=0.0)
+    t_q = tl.load(T + b * stb + offs_m, mask=row_ok, other=0.0)
+    lse1 = tl.load(LSE1 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    lse0 = tl.load(LSE0 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    dlse1 = tl.load(DLSE1 + bh * N + offs_m, mask=row_ok, other=0.0)
+    dlse0 = tl.load(DLSE0 + bh * N + offs_m, mask=row_ok, other=0.0)
+    dd = tl.load(DD + bh * N + offs_m, mask=row_ok, other=0.0)
+    r01 = tl.exp2(lse0 - lse1)
+    mu2 = tl.load(MU + h) * 1.4426950408889634
+    kappa = tl.load(KAPPA + h)
+    k_base, v_base, n_base, t_base = b * skb + h * skh, b * svb + h * svh, bh * N, b * stb
+    dq = tl.zeros([BLOCK_M, D2], dtype=tl.float32)
+    dq_sq = tl.zeros([BLOCK_M], dtype=tl.float32)
+    if CAUSAL:
+        diag = pid_m * BLOCK_M
+        for start_n in range(0, diag, BLOCK_N):
+            dq, dq_sq = _rfa_bwd_dq_block(dq, dq_sq, start_n, K, V, KSQ, T, k_base, v_base, n_base, t_base, skn, svn,
+                                          q, do, q_sq, t_q, lse0, r01, dlse1, dlse0, dd, offs_m, N, mu2, kappa, e_lo,
+                                          D2, DVD, BLOCK_N, CAUSAL, False, IEEE)
+        for start_n in range(diag, tl.minimum(diag + BLOCK_M, N), BLOCK_N):
+            dq, dq_sq = _rfa_bwd_dq_block(dq, dq_sq, start_n, K, V, KSQ, T, k_base, v_base, n_base, t_base, skn, svn,
+                                          q, do, q_sq, t_q, lse0, r01, dlse1, dlse0, dd, offs_m, N, mu2, kappa, e_lo,
+                                          D2, DVD, BLOCK_N, CAUSAL, True, IEEE)
+    else:
+        for start_n in range(0, N, BLOCK_N):
+            dq, dq_sq = _rfa_bwd_dq_block(dq, dq_sq, start_n, K, V, KSQ, T, k_base, v_base, n_base, t_base, skn, svn,
+                                          q, do, q_sq, t_q, lse0, r01, dlse1, dlse0, dd, offs_m, N, mu2, kappa, e_lo,
+                                          D2, DVD, BLOCK_N, CAUSAL, True, IEEE)
+    tl.store(DQ + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], dq.to(DQ.dtype.element_ty),
+             mask=row_ok[:, None])
+    tl.store(DQSQ + bh * N + offs_m, dq_sq, mask=row_ok)
+
+
+_TUNED_RFA_BWD = {}
+
+
+def rfa_backward(q, k, v, t, mu, kappa, lo, o, lse1, lse0, do, dlse1, dlse0, causal, config=None, need_mu=True):
+    """
+    Gradients (dq, dk, dv, dmu, dkappa) of the lean RFA's fused update. Shapes as in lean_backward; lse1, lse0 are
+    the kernel's (without the constant -tau log Sigma_0); lo: the lower clamp of log E. config: ((dK/dV kernel),
+    (dQ kernel)) as (BLOCK_M, BLOCK_N, num_warps, num_stages), else tuned per kernel and shape on first use.
+    """
+    import math
+    B, H, N, D2 = q.shape
+    DV = v.shape[-1]
+    ieee = q.dtype == torch.float32
+    q, k, v, do = (x.contiguous() for x in (q, k, v, do))
+    t = t.to(torch.float32).expand(B, N).contiguous()
+    q_sq, k_sq = q.float().pow(2).sum(-1).contiguous(), k.float().pow(2).sum(-1).contiguous()
+    dd = (do.float() * o.float()).sum(-1).contiguous()
+    lse1, lse0, dlse1, dlse0 = (x.float().contiguous() for x in (lse1, lse0, dlse1, dlse0))
+    mu, kappa = mu.float().contiguous(), kappa.float().contiguous()
+    dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+    dq_sq, dk_sq = torch.empty_like(q_sq), torch.empty_like(k_sq)
+    strides = (q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
+               v.stride(0), v.stride(1), v.stride(2), do.stride(0), do.stride(1), do.stride(2), t.stride(0), H, N)
+    common = (q, k, v, t, q_sq, k_sq, do, lse1, lse0, dlse1, dlse0, dd, mu, kappa)
+    e_lo = math.exp(lo)
+    meta = dict(D2=D2, DVD=DV, CAUSAL=causal, IEEE=ieee)
+    need_mu = bool(need_mu)
+    partials = {}
+
+    def run_dkdv(cfg):
+        bm, bn, nw, ns = cfg
+        nkb = triton.cdiv(N, bn)
+        p_mu = torch.empty(B * H, nkb, device=q.device, dtype=torch.float32)
+        p_kappa = torch.empty_like(p_mu)
+        _rfa_bwd_dkdv[(nkb, B * H)](*common, dk, dv, dk_sq, p_mu, p_kappa, *strides, nkb, e_lo, BLOCK_M=bm,
+                                    BLOCK_N=bn, num_warps=nw, num_stages=ns, NEED_MU=need_mu, **meta)
+        partials["mu"], partials["kappa"] = p_mu, p_kappa
+
+    def run_dq(cfg):
+        bm, bn, nw, ns = cfg
+        _rfa_bwd_dq[(triton.cdiv(N, bm), B * H)](*common, dq, dq_sq, *strides, e_lo, BLOCK_M=bm, BLOCK_N=bn,
+                                                 num_warps=nw, num_stages=ns, **meta)
+
+    if config is None:
+        key = (N, D2, DV, q.dtype, causal, B * H, torch.cuda.get_device_name(q.device), need_mu)
+        if key not in _TUNED_RFA_BWD:
+            best = []
+            for run in (run_dkdv, run_dq):
+                timed = []
+                for cfg in _BWD_CONFIGS:
+                    if run is run_dq and cfg[0] % cfg[1]:
+                        continue
+                    try:
+                        timed.append((_time_launch(lambda: run(cfg)), cfg))
+                    except OutOfResources:
+                        continue
+                best.append(min(timed)[1])
+            _TUNED_RFA_BWD[key] = tuple(best)
+        config = _TUNED_RFA_BWD[key]
+    run_dkdv(config[0])
+    run_dq(config[1])
+    dq = (dq.float() + 2 * q.float() * dq_sq[..., None]).to(q.dtype)
+    dk = (dk.float() + 2 * k.float() * dk_sq[..., None]).to(k.dtype)
+    dmu = partials["mu"].view(B, H, -1).sum(dim=(0, 2)) if need_mu else torch.zeros_like(mu)
+    dkappa = partials["kappa"].view(B, H, -1).sum(dim=(0, 2))
+    return dq, dk, dv, dmu, dkappa
+
+
+class FusedRFALean(torch.autograd.Function):
+    """(o1, lse1, lse0) of the lean RFA (L = -kappa R^2, without the constant -tau log Sigma_0) with the Triton forward
+    and backward. q, k, v [B, H, N, 2D | Dv] (one dtype), t [B|1, N], mu and kappa [H], lo the clamp of log E."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, t, mu, kappa, lo, causal):
+        q_sq, k_sq = q.float().pow(2).sum(-1), k.float().pow(2).sum(-1)
+        o, lse1, lse0 = rfa_forward(q, k, v, t, q_sq, k_sq, mu, kappa, lo, causal)
+        ctx.save_for_backward(q, k, v, t, mu, kappa, o, lse1, lse0)
+        ctx.flags = (lo, causal)
+        return o, lse1, lse0
+
+    @staticmethod
+    def backward(ctx, do, dlse1, dlse0):
+        q, k, v, t, mu, kappa, o, lse1, lse0 = ctx.saved_tensors
+        lo, causal = ctx.flags
+        do = torch.zeros_like(o) if do is None else do
+        dlse1 = torch.zeros_like(lse1) if dlse1 is None else dlse1
+        dlse0 = torch.zeros_like(lse0) if dlse0 is None else dlse0
+        need_mu = ctx.needs_input_grad[4]
+        dq, dk, dv, dmu, dkappa = rfa_backward(q, k, v, t, mu, kappa, lo, o, lse1, lse0, do.to(o.dtype), dlse1, dlse0,
+                                               causal, need_mu=need_mu)
+        return dq, dk, dv, None, dmu.to(mu.dtype) if need_mu else None, dkappa.to(kappa.dtype), None, None
