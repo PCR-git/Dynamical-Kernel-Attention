@@ -24,7 +24,7 @@ def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_b
               skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
               D2: tl.constexpr, DV: tl.constexpr, BLOCK_N: tl.constexpr, CAUSAL: tl.constexpr,
               MASK: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr = False,
-              APPROX: tl.constexpr = True):
+              APPROX: tl.constexpr = True, FLAT: tl.constexpr = False):
     """One key block: the pair logits and the update of the running maximum and sums. MASK: causal and column masks
     (diagonal blocks, and every block if not causal)."""
     FACTOR: tl.constexpr = CAUSAL and APPROX and not MASK and not PLAIN       # E as an outer product
@@ -81,7 +81,15 @@ def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_b
         else:
             log2_e = -mu2 * lag
             e = tl.exp2(log2_e)
-        if APPROX:
+        if FLAT:
+            # Sigma_n = eta^2 (passed as s_inf) at every lag: x = R^2 inv_nu / eta^2, a constant factor; the constant
+            # -log eta^2 is added to the log-sum-exps at the end
+            r2 = tl.maximum(k_sq[None, :] + e * e * q_sq[:, None] - 2.0 * e * s, 0.0)
+            if ROBUST:
+                w = log2_e - coef * tl.log2(1.0 + r2 * (inv_nu / s_inf))
+            else:
+                w = log2_e - (coef * 1.4426950408889634 * inv_nu / s_inf) * r2
+        elif APPROX:
             e2 = e * e
             sigma = s_inf - v_inf * e2
             r2 = tl.maximum(k_sq[None, :] + e2 * q_sq[:, None] - 2.0 * e * s, 0.0)
@@ -117,7 +125,7 @@ def _dka_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, VINF, SINF, INVNU, COEF, O, LSE1, 
                     sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sob, soh, son, stb, H, N,
                     D2: tl.constexpr, DV: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
                     CAUSAL: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr,
-                    APPROX: tl.constexpr):
+                    APPROX: tl.constexpr, FLAT: tl.constexpr):
     pid_m = tl.program_id(0)
     bh = tl.program_id(1)
     b = bh // H
@@ -147,22 +155,23 @@ def _dka_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, VINF, SINF, INVNU, COEF, O, LSE1, 
         for start_n in range(0, diag, BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, False, ROBUST, IEEE, PLAIN, APPROX)
+                                         D2, DV, BLOCK_N, CAUSAL, False, ROBUST, IEEE, PLAIN, APPROX, FLAT)
         for start_n in range(diag, tl.minimum(diag + BLOCK_M, N), BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX)
+                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX, FLAT)
     else:
         for start_n in range(0, N, BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX)
+                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX, FLAT)
 
     acc = acc / l1[:, None]
     tl.store(O + b * sob + h * soh + offs_m[:, None] * son + offs_v[None, :], acc.to(O.dtype.element_ty),
              mask=row_ok[:, None])
-    tl.store(LSE1 + bh * N + offs_m, (m_i + tl.log2(l1)) / 1.4426950408889634, mask=row_ok)
-    tl.store(LSE2 + bh * N + offs_m, (m_i + tl.log2(l2)) / 1.4426950408889634, mask=row_ok)
+    shift = -tl.log(s_inf) if FLAT else 0.0                 # the constant -log Sigma_n left out of the logits
+    tl.store(LSE1 + bh * N + offs_m, (m_i + tl.log2(l1)) / 1.4426950408889634 + shift, mask=row_ok)
+    tl.store(LSE2 + bh * N + offs_m, (m_i + tl.log2(l2)) / 1.4426950408889634 + shift, mask=row_ok)
 
 
 # (BLOCK_M, BLOCK_N, num_warps, num_stages); BLOCK_M a multiple of BLOCK_N (the causal split)
@@ -203,11 +212,13 @@ def _tune(key, args, N, BH, meta):
     return best
 
 
-def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, plain=False, approx=True):
+def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, plain=False, approx=True,
+                  flat=False):
     """
     (o1, lse1, lse2) of the fused forward pass. q, k: [B, H, N, 2D]; v: [B, H, N, Dv] (same dtype); t: [B|1, N];
     q_sq, k_sq: [B, H, N] float32; consts: (mu, v_inf, s_inf, inv_nu, coef), each [H] float32. o1 has v's dtype.
-    config: (BLOCK_M, BLOCK_N, num_warps, num_stages), else tuned per shape on first use. plain=True (benchmarking
+    config: (BLOCK_M, BLOCK_N, num_warps, num_stages), else tuned per shape on first use. flat=True: Sigma_n = eta^2
+    at every lag (flat precision), with eta^2 passed as s_inf (v_inf unused). plain=True (benchmarking
     only): plain softmax attention with scale consts[4] in the same kernel, to separate DKA's cost from the kernel's.
     """
     B, H, N, D2 = q.shape
@@ -223,9 +234,9 @@ def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, p
             q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
             v.stride(0), v.stride(1), v.stride(2), o.stride(0), o.stride(1), o.stride(2), t.stride(0), H, N)
     meta = dict(D2=D2, DV=DV, CAUSAL=causal, ROBUST=robust, IEEE=q.dtype == torch.float32, PLAIN=plain,
-                APPROX=approx)
+                APPROX=approx or flat, FLAT=flat)
     if config is None:
-        key = (N, D2, DV, q.dtype, causal, robust, B * H, torch.cuda.get_device_name(q.device), plain, approx)
+        key = (N, D2, DV, q.dtype, causal, robust, B * H, torch.cuda.get_device_name(q.device), plain, approx, flat)
         config = _TUNED.get(key) or _tune(key, args, N, B * H, meta)
     _launch(config, args, N, B * H, meta)
     return o, lse1, lse2
