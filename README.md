@@ -90,7 +90,8 @@ python download_data.py           # WikiText-103 -> datasets/wikitext-103/
 ```
 
 This fetches the WikiText-103 parquet files from Hugging Face (`Salesforce/wikitext`, `wikitext-103-v1`, about
-300 MB). The GPT-2 tokenizer is included in `gpt2_tokenizer/`. If Hugging Face is not reachable, download the four
+300 MB). `python download_data.py --pg19` also fetches PG-19 (the `emozilla/pg19` parquet mirror, about 11 GB) for the
+scaled runs; it is tokenized on first use into `datasets/pg19/tokens/` (3.07B training tokens, about 6 GB). The GPT-2 tokenizer is included in `gpt2_tokenizer/`. If Hugging Face is not reachable, download the four
 files of `wikitext-103-v1` from the dataset page by other means and put them in `datasets/wikitext-103/`. BabyLM 2025 (used for some RFA results) is not downloaded automatically; place
 its 100M-word corpus at `datasets/BabyLM_2025/{train_100M,dev,test}/`.
 
@@ -118,12 +119,34 @@ Main options of `DKAConfig` (see `dka/config.py`):
 | `prior` | the null slot: `"tokens"` (default, $\gamma^{-2} = c_h/\eta^2$, worth $c_h$ agreeing tokens), `"window"`, `"direct"` |
 | `process_noise` | learn the forcing $\sigma^2$ (`"variance"`) or the stationary variance $v_\infty$ (`"steady_state"`) |
 | `robust_weight` | Student-t weights (default) or the exponential kernel |
+| `flat_precision` | $\Sigma_n = \eta^2$ at every lag; with `robust_weight=False` this is the lean variant used at scale |
+| `kernel` | how the update is computed: `"explicit"` (default; materializes the weights, all diagnostics), `"flex"` (FlexAttention), `"triton"` (the fused kernel; lean variant), `"two_pass"` / `"blocked"` (references) |
 | `inflation` | variance inflation $\zeta$ of the stationary prior (Appendix F of the preprint); `None` = stationary prior |
 | `saturation` | experimental: a measurement error shared across tokens, which caps the evidence $S_i$ |
 
 `info` holds the per-head parameters ($\mu$, $\sigma^2$, $\eta^2$, $\gamma^2$, $\nu$, ...) and the mean step; with
 `return_metadata=True` also the per-token step $S_i/(\gamma^{-2}+S_i)$, the evidence $\log S_i$, the posterior
 variance and the attention weights.
+
+## Fused kernels
+
+The explicit layer materializes every pair's weight, so its memory grows with the square of the length. Two fused
+implementations compute the same update without doing so (memory linear in the length), and both are tested against
+the explicit layer:
+
+- `dka/flex.py`: DKA and RFA through PyTorch's FlexAttention, as two softmax passes that share the logits
+  (`kernel="flex"`; Student-t or exponential weight, lag-dependent precision).
+- `dka/fused.py`: Triton kernels for the lean variants (flat precision, exponential weight) of DKA and RFA
+  (`kernel="triton"`): one pass over the keys with a running maximum and the sums $\sum p\tilde V$ and $\sum pE$, and a
+  backward pass that reduces every gradient over rows, columns or blocks, without atomic additions. At width 128 the
+  lean DKA costs about 1.1 times softmax attention in the same kernels. Needs a CUDA GPU and `2 * head_dim`
+  a power of two, at least 16.
+- `dka/fused_reference.py`: the fused kernels' specification, and a blocked PyTorch reference of them, tile by tile,
+  with the hand-written backward (`kernel="blocked"`, CPU), checked against the explicit layer and by `gradcheck`.
+
+The baselines' fused path (`AttentionConfig.kernel="fused"`) uses `scaled_dot_product_attention` (flash or cuDNN
+attention) for RoPE and FlexAttention for ALiBi and the null slot. `train_lm.py --kernel flex|triton` selects these
+for every model at once.
 
 ## Building models
 
@@ -146,6 +169,8 @@ lm = LanguageModel(backbone, vocab_size=50257, embed_dim=256)
 ```
 python train_lm.py --dataset wikitext103 --preset D3 --compile
 python train_lm.py --dataset wikitext103 --preset D2 --set damping=0.5     # override any args field
+python train_lm.py --dataset wikitext103 --preset D3.b1.r1e4 --compile --kernel flex --bf16   # fused kernels, bf16
+python train_lm.py --dataset pg19 --preset D3.b1.r1e4.pg4096 --compile       # scaled: lean DKA through Triton
 python eval_extrapolation.py --dataset wikitext103 runs/wikitext103/D3__<date>   # test perplexity at L = 512 ... 4096
 python evals/eval_eviction.py eviction.txt D3=runs/wikitext103/D3__<date>             # perplexity vs KV-cache size at 4096
 python evals/eval_positions.py positions.txt D3=runs/wikitext103/D3__<date>          # perplexity by position at 512, per-head diagnostics
@@ -160,6 +185,11 @@ one run takes 6-8 hours on one GPU. `run_queue.ps1` runs several trainings in se
 
 | Presets | Models |
 | --- | --- |
+| D3.b1.r1e4 | the preprint's DKA: spectrally coupled, $b = 1$, RoPE base $10^4$, learned temperature; its ablations are suffixes (`.est`, `.noVR`, `.exp`, `.dot`, `.flat`, `.lean`, `.N`, `.nonSC`, `.noR`, `.mu0`, `.plain`, ...; see `presets.py`) |
+| M3.b1.r1e4 | the preprint's RFA baseline (B3) on the same spectrum; `.lean` its lean form |
+| D3.b1.r1500, D3.b1.r5e4, D3.b1.r\<base\>.L1024, B1.L1024 | DKA at RoPE bases 1500 / $10^4$ / $5\cdot10^4$, trained at 512 and 1024 tokens; RoPE at 1024 |
+| \<B1, B2, M3.b1.r1e4, D3.b1.r1e4\>.s2 / .s3 | the headline models with two more seeds |
+| \<B1, B2, M3.b1.r1e4, D3.b1.r1e4\>.pg1024 / .pg2048 / .pg4096 | the scaled models on PG-19: 12 layers of width 768, 12 heads (153M), bf16, 262k tokens per step by gradient accumulation; DKA (and RFA) in the lean form through the Triton kernel; `.lr<lr>` the 300M-token learning-rate check |
 | D1, D2, D3 | DKA: isotropic; spectrally coupled with $b = 0.05$ (D2) and $b = 5$ (D3) |
 | D2.Z, D3.Z | DKA with learned variance inflation |
 | D2.S, D3.S | DKA with evidence saturation (experimental) |
@@ -170,8 +200,13 @@ one run takes 6-8 hours on one GPU. `run_queue.ps1` runs several trainings in se
 | M2.1-M2.8 | RFA ablations from the RFA paper |
 | B1-B10 | baselines: RoPE, ALiBi, RoPE + decay, SC-RoPE + decay, SC-RoPE + linear bias with slopes $2\mu_h$ (DKA without the noise model and null slot), KERPLE-log, xPos, NoPE, RoPE + softmax plus one, B5 + softmax plus one (DKA without the noise model) |
 
-Speed and memory: `--compile` applies `torch.compile` to the backbone. `LanguageModel.loss()` computes the loss in
-chunks, so the full logits are never stored, and `--grad-checkpointing` recomputes each block in the backward pass.
+Speed and memory: `--compile` applies `torch.compile` to the backbone. `--kernel flex|triton` uses the fused kernels
+(above), `--bf16` bf16 autocast and `--tf32` TF32 matrix products. `--grad-accum N` accumulates N micro-batches of
+`--batch-size` sequences per optimizer step. `LanguageModel.loss()` computes the loss in chunks, so the full logits are
+never stored, and `--grad-checkpointing` recomputes each block in the backward pass. Presets can set these defaults
+(`train_bf16`, `train_grad_accum`, `train_batch_size`, `train_lr`, `train_epochs`, `train_max_tokens`); on PG-19,
+`--max-tokens` trains on a fixed subset of the single pass, and `--epochs` splits the pass into parts.
+`benchmarks/` estimates training time and memory on a given GPU (see `benchmarks/README.md`).
 
 ## Dynamics experiment
 
@@ -184,7 +219,8 @@ untrained estimators that use the true dynamics. `--data stationary --test-lengt
 ```
 python tests/test_dka_theory.py       # the preprint's derivations, checked numerically
 python tests/test_dka_kernels.py      # DKA kernels against dka/reference.py
-python tests/test_dka_layer.py        # the layer against the literal reference, its limits (RFA, RoPE, softmax + 1), Prop. 3
+python tests/test_dka_layer.py        # the layer against the literal reference, its limits (RFA, RoPE, softmax + 1), Prop. 3,
+                                      # and the fused kernels (FlexAttention, Triton: GPU tests skip without a GPU)
 python tests/test_dka_integration.py  # DKA inside the models, presets, training logs, torch.compile, bf16
 python tests/check_regression.py      # RFA and baseline models against stored reference outputs
 python tests/test_smoke.py            # RFA and baseline behaviors
@@ -201,6 +237,9 @@ dka/
 ├── attention.py          # MultiheadIsotropicRFA
 ├── config.py             # DKAConfig, RFAConfig
 ├── kernels.py            # rotations, decay, covariances, residual norms, logits
+├── flex.py               # DKA and RFA through FlexAttention (two passes)
+├── fused.py              # Triton kernels of the lean DKA and RFA (forward and backward)
+├── fused_reference.py    # the fused kernels' specification and blocked reference
 ├── reference.py          # literal implementation of the DKA model (ground truth for tests)
 ├── init.py               # frequency, decay and complex-projection initialization
 ├── legacy.py             # loading checkpoints from earlier versions of the RFA code

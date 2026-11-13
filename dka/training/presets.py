@@ -307,12 +307,12 @@ PRESETS.setdefault("B1.L1024", dict(PRESETS["B1"], seq_len=1024, train_batch_siz
 # parameter for one pass), fused kernels (DKA:
 # the lean variant, flat precision and the exponential weight, through dka/fused.py; the others: dka_kernel="flex") and
 # bf16, micro-batches of 8192 tokens accumulated to 262k tokens per optimizer step, learning rate 6e-4, embedding
-# init N(0, 0.02), one pass over PG-19 (3.07B tokens) in 10 parts: <base>.pg<context>. The learning-rate check:
+# init N(0, 0.02), one pass over PG-19 (3.07B tokens) in 10 parts: <base>.pg<1024|2048|4096>. The learning-rate check:
 # <base>.pg<context>.lr<lr>, 300M tokens (a fixed subset of the pass) in 3 parts, same schedule shape
 _PG = dict(d_e=768, d_k_total=768, d_v_total=768, n_heads=12, num_blocks=12, dka_kernel="flex", train_bf16=True,
            train_grad_accum=32, train_lr=6e-4, train_epochs=10, train_embed_init_std=0.02)
 for _base in ("B1", "B2", "M3.b1.r1e4", "D3.b1.r1e4"):
-    for _ctx in (1024, 4096):
+    for _ctx in (1024, 2048, 4096):
         _pg = dict(PRESETS[_base], **_PG, seq_len=_ctx, train_batch_size=8192 // _ctx)
         if _base.startswith("D3"):     # DKA scales up as the lean variant, through its own fused kernel
             _pg.update(dka_flat_precision=True, use_robust_weight=False, dka_kernel="triton")
