@@ -744,6 +744,67 @@ def test_triton_layer_gpu():
                           a.grad.double() / a.grad.abs().max().clamp_min(1e-12), 1e-4)
 
 
+def test_rfa_blocked_reference():
+    """RFA with kernel='blocked' (the lean RFA's fused-kernel reference: flat precision, exponential weight, one pass
+    tile by tile, hand-written backward) equals the explicit lean RFA, outputs and every gradient: flat prior and null
+    slot, innovation and estimate, unrotated values; regular, irregular and non-causal; block sizes that do not divide
+    the length. damping 5 puts the fast heads' decay exponent on its clamp within the sequence."""
+    import dka.fused_reference as fr
+    x, t = inputs(N=10)
+    lean = dict(d_model=D_MODEL, n_heads=H, head_dim=D, frequency_init="spectral", damping=5.0, zero_decay_frac=0.0,
+                flat_precision=True, robust_weight=False)
+    cases = [dict(), dict(output="estimate"), dict(prior="tokens"), dict(prior="tokens", output="estimate"),
+             dict(rotate_values=False)]
+    blocks = (fr.BLOCK_M, fr.BLOCK_N)
+    try:
+        for bm, bn in ((4, 3), (3, 5), (16, 16)):
+            fr.BLOCK_M, fr.BLOCK_N = bm, bn
+            for kw in cases:
+                for t_m, causal in ((t, True), (None, True), (t, False)):
+                    torch.manual_seed(0)
+                    ref = MultiheadIsotropicRFA(RFAConfig(**lean, **kw)).double()
+                    fast = MultiheadIsotropicRFA(RFAConfig(**lean, **kw, kernel="blocked")).double()
+                    fast.load_state_dict(ref.state_dict())
+                    with torch.no_grad():
+                        for m in (ref, fast):
+                            m.tau_raw.copy_(torch.tensor([0.3, -0.2, 1.5], dtype=F64))
+                            if kw.get("prior") == "tokens":
+                                m.log_c.copy_(torch.tensor([-1.0, 0.5, 2.0], dtype=F64))
+                    o_r, _ = ref(x, t_measure=t_m, causal=causal)
+                    o_f, _ = fast(x, t_measure=t_m, causal=causal)
+                    close(o_f, o_r, 1e-10)
+                    o_r.square().mean().backward()
+                    o_f.square().mean().backward()
+                    for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                        if a.grad is not None:
+                            close(b.grad, a.grad, 1e-9)
+    finally:
+        fr.BLOCK_M, fr.BLOCK_N = blocks
+    for bad in (dict(flat_precision=False), dict(robust_weight=True), dict(dle_gate=False)):
+        try:
+            RFAConfig(**{**lean, **bad}, kernel="blocked")
+            raise AssertionError(f"kernel='blocked' with {bad} was accepted")
+        except ValueError:
+            pass
+
+
+def test_rfa_blocked_gradcheck():
+    """The lean RFA's hand-written backward (BlockedRFALean) against finite differences, for all three outputs
+    (o1, lse1, lse0) and q, k, v, mu, kappa, causal and not, irregular positions, with the decay exponent on its clamp
+    for some pairs (mu gets no gradient there)."""
+    from dka.fused_reference import BlockedRFALean
+    g = torch.Generator().manual_seed(4)
+    B, H_, N, D2, Dv = 1, 2, 7, 4, 3
+    q, k, v = (0.5 * torch.randn(B, H_, N, n, generator=g, dtype=F64) for n in (D2, D2, Dv))
+    t = torch.cumsum(0.4 + torch.rand(B, N, generator=g, dtype=F64), 1)
+    mu = torch.tensor([0.3, 0.8], dtype=F64)
+    kappa = torch.tensor([0.7, 0.2], dtype=F64)
+    for causal in (True, False):
+        args = [x.clone().requires_grad_() for x in (q, k, v, mu, kappa)]
+        fn = lambda q, k, v, mu, kappa: BlockedRFALean.apply(q, k, v, t, mu, kappa, -1.5, 0.0, causal, 3, 2)
+        assert torch.autograd.gradcheck(fn, args, eps=1e-6, atol=1e-7, rtol=1e-5), causal
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

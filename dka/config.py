@@ -33,6 +33,9 @@ class RFAConfig:
     init_steady_state_var: float = 0.1
     init_measurement_var: float = 1.0
     init_nu_over_d: float = 4.0
+    # flat precision: Sigma = eta^2 + gamma^2 + cov_eps (its lag-0 value) at every lag, so the DLE bias is constant and
+    # the residual is scaled the same at every lag (the lean RFA with robust_weight=False)
+    flat_precision: bool = False
 
     # --- Attention weights ---
     robust_weight: bool = True       # Student-t (power-law) weight; False = exponential weight
@@ -69,18 +72,23 @@ class RFAConfig:
     max_exponent: float = 0.0
 
     # --- Computation: "explicit" (weights materialized, chunked over queries), "two_pass" (the two softmax passes
-    # of dka.flex, the form of the fused kernel; weights still materialized) or "flex" (the two passes through
-    # FlexAttention, memory linear in the length); mu > 0 in every head ---
-    kernel: Literal["explicit", "two_pass", "flex"] = "explicit"
+    # of dka.flex, the form of the fused kernel; weights still materialized), "flex" (the two passes through
+    # FlexAttention, memory linear in the length; mu > 0 in every head) or "blocked" (the fused kernel's reference
+    # for the lean RFA, dka/fused_reference.py: flat precision and the exponential weight) ---
+    kernel: Literal["explicit", "two_pass", "flex", "blocked"] = "explicit"
 
     def __post_init__(self):
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim must be even (conjugate frequency pairs), got {self.head_dim}")
-        if self.kernel not in ("explicit", "two_pass", "flex"):
-            raise ValueError(f"kernel must be 'explicit', 'two_pass' or 'flex', got {self.kernel!r}")
-        if self.kernel != "explicit" and (self.zero_decay or self.zero_decay_frac > 0):
-            raise ValueError("RFA kernels other than 'explicit' need mu > 0 in every head (no zero_decay, "
-                             "zero_decay_frac = 0)")
+        if self.kernel not in ("explicit", "two_pass", "flex", "blocked"):
+            raise ValueError(f"kernel must be 'explicit', 'two_pass', 'flex' or 'blocked', got {self.kernel!r}")
+        if self.kernel in ("two_pass", "flex") and (self.zero_decay or self.zero_decay_frac > 0 or self.flat_precision):
+            raise ValueError(f"kernel={self.kernel!r} needs mu > 0 in every head (no zero_decay, zero_decay_frac = 0) "
+                             "and the lag-dependent precision")
+        if self.kernel == "blocked" and (not self.flat_precision or self.robust_weight or not self.dle_bias
+                                         or not self.dle_gate or not self.full_residual_norm):
+            raise ValueError("kernel='blocked' computes the lean RFA: flat_precision=True, robust_weight=False, with "
+                             "the DLE bias and gate and the full residual norm")
 
     @classmethod
     def from_args(cls, args, d_model, n_heads, head_dim):
@@ -134,6 +142,7 @@ class RFAConfig:
             epsilon=args.epsilon,
             min_exponent=args.min_exponent,
             max_exponent=args.max_exponent,
+            flat_precision=getattr(args, "rfa_flat_precision", False),
             kernel={"triton": "flex"}.get(getattr(args, "dka_kernel", "explicit"), getattr(args, "dka_kernel", "explicit")),
         )
 

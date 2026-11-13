@@ -145,7 +145,11 @@ class MultiheadIsotropicRFA(nn.Module):
                 raise ValueError(f"return_metadata needs kernel='explicit' (got {c.kernel!r})")
             null = self._null_logit(p) if c.prior == "tokens" else None
             rot = (cos, sin) if c.rotate_values else (None, None)
-            update = rfa_flex_update if c.kernel == "flex" else rfa_two_pass_update
+            if c.kernel == "blocked":
+                from .fused_reference import rfa_blocked_update
+                update = rfa_blocked_update
+            else:
+                update = rfa_flex_update if c.kernel == "flex" else rfa_two_pass_update
             delta = update(p, t, Q, K, V, V_agg, *rot, c, null, causal)
             return self.W_o(delta.permute(0, 1, 4, 2, 3).reshape(B, N, -1)), self._param_summary(p)
 
@@ -171,8 +175,11 @@ class MultiheadIsotropicRFA(nn.Module):
         lags = (t[:, i0:i1, None] - t[:, None, :]).abs()[..., None]
         decay_exp = torch.clamp(-p["mu"] * lags, min=c.min_exponent, max=c.max_exponent)
         E = torch.exp(decay_exp)
-        Sigma = lag_covariance(p["mu"], lags, decay_exp, p["process_var"], p["eta_sq"], p["gamma_sq"],
-                               c.process_noise, mu_eps=c.epsilon, cov_eps=c.cov_epsilon)
+        if c.flat_precision:                                                    # the lag-0 covariance at every lag
+            Sigma = (p["eta_sq"] + p["gamma_sq"] + c.cov_epsilon).expand_as(E)
+        else:
+            Sigma = lag_covariance(p["mu"], lags, decay_exp, p["process_var"], p["eta_sq"], p["gamma_sq"],
+                                   c.process_noise, mu_eps=c.epsilon, cov_eps=c.cov_epsilon)
 
         # --- Robust attention weights ---
         R_sq = residual_norm_sq(Q[:, i0:i1], K, E, full=c.full_residual_norm)
