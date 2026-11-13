@@ -23,9 +23,11 @@ from triton.runtime.errors import OutOfResources
 def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base, v_base, kn_base, t_base,
               skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
               D2: tl.constexpr, DV: tl.constexpr, BLOCK_N: tl.constexpr, CAUSAL: tl.constexpr,
-              MASK: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr = False):
+              MASK: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr = False,
+              APPROX: tl.constexpr = True):
     """One key block: the pair logits and the update of the running maximum and sums. MASK: causal and column masks
     (diagonal blocks, and every block if not causal)."""
+    FACTOR: tl.constexpr = CAUSAL and APPROX and not MASK and not PLAIN       # E as an outer product
     offs_n = start_n + tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, D2)
     offs_v = tl.arange(0, DV)
@@ -49,19 +51,46 @@ def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_b
         w = s * coef * 1.4426950408889634
         e = w
     else:
-        lag = t_q[:, None] - t_k[None, :]
-        lag = tl.maximum(lag, 0.0) if CAUSAL else tl.abs(lag)
-        log_e = -mu * lag
-        e = tl.exp(log_e)
-        e2 = e * e
-        sigma = s_inf - v_inf * e2
-        r2 = tl.maximum(k_sq[None, :] + e2 * q_sq[:, None] - 2.0 * e * s, 0.0)
-        x = r2 * inv_nu / sigma
-        if ROBUST:
-            phi = libdevice.log1p(x)
+        mu2 = mu * 1.4426950408889634                                           # decay rate in units of log2
+        if not FACTOR:
+            lag = t_q[:, None] - t_k[None, :]
+            lag = tl.maximum(lag, 0.0) if CAUSAL else tl.abs(lag)
+        if not APPROX:                # the stage-2 form (precise division, log, log1p, exp per pair), for comparison
+            log_e = -mu * lag
+            e = tl.exp(log_e)
+            e2 = e * e
+            sigma = s_inf - v_inf * e2
+            r2 = tl.maximum(k_sq[None, :] + e2 * q_sq[:, None] - 2.0 * e * s, 0.0)
+            x = r2 * inv_nu / sigma
+            if ROBUST:
+                phi = libdevice.log1p(x)
+            else:
+                phi = x
+            w = (log_e - coef * phi - tl.log(sigma)) * 1.4426950408889634
+        elif FACTOR:
+            # below the diagonal every key precedes every query, so with t_ref the block's last key both factors of
+            # E = e^{-mu (t_i - t_ref)} e^{-mu (t_ref - t_j)} are <= 1 (no overflow, also for irregular positions);
+            # log2 E is a row plus a column vector, so no per-pair lag is kept (fewer live registers)
+            t_ref = tl.max(t_k, 0)
+            la = -mu2 * (t_q - t_ref)
+            lb = -mu2 * (t_ref - t_k)
+            a = tl.exp2(la)
+            bk = tl.exp2(lb)
+            e = a[:, None] * bk[None, :]
+            log2_e = la[:, None] + lb[None, :]
         else:
-            phi = x
-        w = (log_e - coef * phi - tl.log(sigma)) * 1.4426950408889634          # in units of log2
+            log2_e = -mu2 * lag
+            e = tl.exp2(log2_e)
+        if APPROX:
+            e2 = e * e
+            sigma = s_inf - v_inf * e2
+            r2 = tl.maximum(k_sq[None, :] + e2 * q_sq[:, None] - 2.0 * e * s, 0.0)
+            x = libdevice.fast_dividef(r2 * inv_nu, sigma)                      # approximate division
+            # w in units of log2: log2 E - coef phi log2(e) - log2 Sigma, with phi log2(e) = log2(1 + x) (Student-t)
+            if ROBUST:
+                w = log2_e - coef * tl.log2(1.0 + x) - tl.log2(sigma)
+            else:
+                w = log2_e - (coef * 1.4426950408889634) * x - tl.log2(sigma)
     if MASK:
         keep = col_ok[None, :]
         if CAUSAL:
@@ -72,7 +101,9 @@ def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_b
     alpha = tl.exp2(m_i - m_new)
     p = tl.exp2(w - m_new[:, None])
     l1 = l1 * alpha + tl.sum(p, 1)
-    if not PLAIN:
+    if FACTOR:
+        l2 = l2 * alpha + a * tl.sum(p * bk[None, :], 1)      # sum_j p E = a_i sum_j p b_j
+    elif not PLAIN:
         l2 = l2 * alpha + tl.sum(p * e, 1)
     if IEEE:
         acc = acc * alpha[:, None] + tl.dot(p, v, input_precision="ieee")
@@ -85,7 +116,8 @@ def _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_b
 def _dka_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, VINF, SINF, INVNU, COEF, O, LSE1, LSE2,
                     sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sob, soh, son, stb, H, N,
                     D2: tl.constexpr, DV: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                    CAUSAL: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr):
+                    CAUSAL: tl.constexpr, ROBUST: tl.constexpr, IEEE: tl.constexpr, PLAIN: tl.constexpr,
+                    APPROX: tl.constexpr):
     pid_m = tl.program_id(0)
     bh = tl.program_id(1)
     b = bh // H
@@ -115,16 +147,16 @@ def _dka_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, VINF, SINF, INVNU, COEF, O, LSE1, 
         for start_n in range(0, diag, BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, False, ROBUST, IEEE, PLAIN)
+                                         D2, DV, BLOCK_N, CAUSAL, False, ROBUST, IEEE, PLAIN, APPROX)
         for start_n in range(diag, tl.minimum(diag + BLOCK_M, N), BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN)
+                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX)
     else:
         for start_n in range(0, N, BLOCK_N):
             acc, l1, l2, m_i = _fwd_tile(acc, l1, l2, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
                                          v_base, kn_base, t_base, skn, svn, N, mu, v_inf, s_inf, inv_nu, coef,
-                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN)
+                                         D2, DV, BLOCK_N, CAUSAL, True, ROBUST, IEEE, PLAIN, APPROX)
 
     acc = acc / l1[:, None]
     tl.store(O + b * sob + h * soh + offs_m[:, None] * son + offs_v[None, :], acc.to(O.dtype.element_ty),
@@ -134,8 +166,11 @@ def _dka_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, VINF, SINF, INVNU, COEF, O, LSE1, 
 
 
 # (BLOCK_M, BLOCK_N, num_warps, num_stages); BLOCK_M a multiple of BLOCK_N (the causal split)
+# DKA keeps 4-5 more tile-sized float32 values live than softmax (each costs BLOCK_M BLOCK_N / (32 num_warps)
+# registers per thread), so narrow key blocks with 8 warps are the ones that avoid spilling at width 128
 _CONFIGS = [(64, 64, 4, 2), (64, 32, 4, 2), (64, 64, 4, 3), (64, 32, 4, 1), (128, 64, 4, 2), (128, 64, 8, 2),
-            (128, 32, 4, 2), (128, 64, 8, 3), (128, 128, 8, 2), (64, 64, 8, 2)]
+            (128, 32, 4, 2), (128, 64, 8, 3), (128, 128, 8, 2), (64, 64, 8, 2), (128, 32, 8, 2), (128, 32, 8, 3),
+            (64, 32, 8, 2), (128, 16, 4, 2), (128, 16, 8, 2), (64, 16, 4, 2)]
 _TUNED = {}
 
 
@@ -145,18 +180,19 @@ def _launch(cfg, args, N, BH, meta):
 
 
 def _tune(key, args, N, BH, meta):
-    """The fastest of _CONFIGS for this shape (median of 5 timed launches after one warm-up)."""
+    """The fastest of _CONFIGS for this shape (median of 20 timed launches after 3 warm-ups)."""
     best, best_ms = None, float("inf")
     for cfg in _CONFIGS:
         try:
-            _launch(cfg, args, N, BH, meta)
+            for _ in range(3):
+                _launch(cfg, args, N, BH, meta)
             torch.cuda.synchronize()
             ts = []
-            for _ in range(5):
+            for _ in range(20):
                 st, en = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
                 st.record(); _launch(cfg, args, N, BH, meta); en.record(); torch.cuda.synchronize()
                 ts.append(st.elapsed_time(en))
-            ms = sorted(ts)[2]
+            ms = sorted(ts)[10]
         except OutOfResources:
             continue
         if ms < best_ms:
@@ -167,7 +203,7 @@ def _tune(key, args, N, BH, meta):
     return best
 
 
-def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, plain=False):
+def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, plain=False, approx=True):
     """
     (o1, lse1, lse2) of the fused forward pass. q, k: [B, H, N, 2D]; v: [B, H, N, Dv] (same dtype); t: [B|1, N];
     q_sq, k_sq: [B, H, N] float32; consts: (mu, v_inf, s_inf, inv_nu, coef), each [H] float32. o1 has v's dtype.
@@ -186,9 +222,10 @@ def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, p
     args = (q, k, v, t, q_sq, k_sq, *consts, o, lse1, lse2,
             q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
             v.stride(0), v.stride(1), v.stride(2), o.stride(0), o.stride(1), o.stride(2), t.stride(0), H, N)
-    meta = dict(D2=D2, DV=DV, CAUSAL=causal, ROBUST=robust, IEEE=q.dtype == torch.float32, PLAIN=plain)
+    meta = dict(D2=D2, DV=DV, CAUSAL=causal, ROBUST=robust, IEEE=q.dtype == torch.float32, PLAIN=plain,
+                APPROX=approx)
     if config is None:
-        key = (N, D2, DV, q.dtype, causal, robust, B * H, torch.cuda.get_device_name(q.device), plain)
+        key = (N, D2, DV, q.dtype, causal, robust, B * H, torch.cuda.get_device_name(q.device), plain, approx)
         config = _TUNED.get(key) or _tune(key, args, N, B * H, meta)
     _launch(config, args, N, B * H, meta)
     return o, lse1, lse2
