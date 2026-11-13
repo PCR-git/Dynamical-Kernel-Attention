@@ -805,6 +805,31 @@ def test_rfa_blocked_gradcheck():
         assert torch.autograd.gradcheck(fn, args, eps=1e-6, atol=1e-7, rtol=1e-5), causal
 
 
+def test_rfa_forward_gpu():
+    """The lean RFA's Triton forward (dka/fused.rfa_forward) against the blocked reference in float32: causal and not,
+    irregular positions, the decay clamp active, a length that is not a multiple of the block size. GPU only."""
+    try:
+        assert torch.cuda.device_count() > 0
+        from dka.fused import rfa_forward
+    except Exception:
+        print("        (skipped: no GPU or Triton)")
+        return
+    from dka.fused_reference import rfa_blocked_forward
+    g = torch.Generator().manual_seed(0)
+    B, H_, N = 2, 3, 150
+    q, k, v = (0.4 * torch.randn(B, H_, N, 32, generator=g) for _ in range(3))
+    t = torch.cumsum(0.4 + torch.rand(B, N, generator=g), 1)
+    mu, kappa = torch.tensor([0.1, 0.5, 0.9]), torch.tensor([0.05, 0.2, 0.1])
+    for causal in (True, False):
+        ref = rfa_blocked_forward(q.double(), k.double(), v.double(), t.double(), mu.double().view(1, -1, 1, 1),
+                                  kappa.double().view(1, -1, 1, 1), -1.5, 0.0, causal)
+        qd, kd, vd = (x.cuda() for x in (q, k, v))
+        out = rfa_forward(qd, kd, vd, t.cuda(), qd.pow(2).sum(-1), kd.pow(2).sum(-1), mu.cuda(), kappa.cuda(), -1.5,
+                          causal)
+        for a, r in zip(out, ref):
+            close(a.double().cpu(), r, 2e-6)
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

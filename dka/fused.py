@@ -613,3 +613,154 @@ def triton_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     lse1, lse2 = lse1.transpose(1, 2) + shift, lse2.transpose(1, 2) + shift          # [B, N, H]
     rot = (cos, sin) if config.rotate_values else (None, None)
     return combine(o1, lse1, lse2, p["log_prior_precision"].to(f32), V.to(f32), *rot)
+
+
+
+# =====================================================================================================================
+# Lean RFA (flat precision, exponential weight), forward pass; specified in fused_reference (rfa_blocked_forward).
+# L = -kappa R^2 with R^2 = |q_i|^2 + E^2 |k_j|^2 - 2 E s_ij and E = max(e^{-mu lag}, e^{lo}) (RFA's clamp of log E;
+# hi = 0 is inactive for lag >= 0). The running maximum is that of L, and the sums are l0 = sum p, l1 = sum p E and
+# acc = sum p E V~ (p = e^{L - m}): o1 = acc / l1, lse1 = m + log l1, lse0 = m + log l0. Below the diagonal E is an
+# outer product of a query and a key vector (both <= 1, t_ref the block's last key), clamped elementwise.
+# =====================================================================================================================
+
+@triton.jit
+def _rfa_fwd_tile(acc, l0, l1, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base, v_base, kn_base, t_base,
+                  skn, svn, N, mu2, kappa2, e_lo,
+                  D2: tl.constexpr, DV: tl.constexpr, BLOCK_N: tl.constexpr, CAUSAL: tl.constexpr,
+                  MASK: tl.constexpr, IEEE: tl.constexpr):
+    offs_n = start_n + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DV)
+    if MASK:
+        col_ok = offs_n < N
+        k = tl.load(K + k_base + offs_n[:, None] * skn + offs_d[None, :], mask=col_ok[:, None], other=0.0)
+        v = tl.load(V + v_base + offs_n[:, None] * svn + offs_v[None, :], mask=col_ok[:, None], other=0.0)
+        k_sq = tl.load(KSQ + kn_base + offs_n, mask=col_ok, other=0.0)
+        t_k = tl.load(T + t_base + offs_n, mask=col_ok, other=0.0)
+    else:
+        k = tl.load(K + k_base + offs_n[:, None] * skn + offs_d[None, :])
+        v = tl.load(V + v_base + offs_n[:, None] * svn + offs_v[None, :])
+        k_sq = tl.load(KSQ + kn_base + offs_n)
+        t_k = tl.load(T + t_base + offs_n)
+    if IEEE:
+        s = tl.dot(q, tl.trans(k), input_precision="ieee")
+    else:
+        s = tl.dot(q, tl.trans(k))
+    if CAUSAL and not MASK:
+        t_ref = tl.max(t_k, 0)
+        e = tl.exp2(-mu2 * (t_q - t_ref))[:, None] * tl.exp2(-mu2 * (t_ref - t_k))[None, :]
+    else:
+        lag = t_q[:, None] - t_k[None, :]
+        lag = tl.maximum(lag, 0.0) if CAUSAL else tl.abs(lag)
+        e = tl.exp2(-mu2 * lag)
+    e = tl.maximum(e, e_lo)
+    r2 = tl.maximum(q_sq[:, None] + e * e * k_sq[None, :] - 2.0 * e * s, 0.0)
+    w = -kappa2 * r2                                                             # L in units of log2
+    if MASK:
+        keep = col_ok[None, :]
+        if CAUSAL:
+            keep = keep & (offs_m[:, None] >= offs_n[None, :])
+        w = tl.where(keep, w, float("-inf"))
+    m_new = tl.maximum(m_i, tl.max(w, 1))
+    alpha = tl.exp2(m_i - m_new)
+    p = tl.exp2(w - m_new[:, None])
+    pe = p * e
+    l0 = l0 * alpha + tl.sum(p, 1)
+    l1 = l1 * alpha + tl.sum(pe, 1)
+    if IEEE:
+        acc = acc * alpha[:, None] + tl.dot(pe, v, input_precision="ieee")
+    else:
+        acc = acc * alpha[:, None] + tl.dot(pe.to(v.dtype), v)
+    return acc, l0, l1, m_new
+
+
+@triton.jit
+def _rfa_fwd_kernel(Q, K, V, T, QSQ, KSQ, MU, KAPPA, O, LSE1, LSE0,
+                    sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sob, soh, son, stb, H, N, e_lo,
+                    D2: tl.constexpr, DV: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                    CAUSAL: tl.constexpr, IEEE: tl.constexpr):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // H
+    h = bh % H
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DV)
+    row_ok = offs_m < N
+    q = tl.load(Q + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], mask=row_ok[:, None], other=0.0)
+    q_sq = tl.load(QSQ + bh * N + offs_m, mask=row_ok, other=0.0)
+    t_q = tl.load(T + b * stb + offs_m, mask=row_ok, other=0.0)
+    mu2 = tl.load(MU + h) * 1.4426950408889634
+    kappa2 = tl.load(KAPPA + h) * 1.4426950408889634
+    k_base, v_base, kn_base, t_base = b * skb + h * skh, b * svb + h * svh, bh * N, b * stb
+
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l0 = tl.zeros([BLOCK_M], dtype=tl.float32)
+    l1 = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, DV], dtype=tl.float32)
+    if CAUSAL:
+        diag = pid_m * BLOCK_M
+        for start_n in range(0, diag, BLOCK_N):
+            acc, l0, l1, m_i = _rfa_fwd_tile(acc, l0, l1, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
+                                             v_base, kn_base, t_base, skn, svn, N, mu2, kappa2, e_lo,
+                                             D2, DV, BLOCK_N, CAUSAL, False, IEEE)
+        for start_n in range(diag, tl.minimum(diag + BLOCK_M, N), BLOCK_N):
+            acc, l0, l1, m_i = _rfa_fwd_tile(acc, l0, l1, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
+                                             v_base, kn_base, t_base, skn, svn, N, mu2, kappa2, e_lo,
+                                             D2, DV, BLOCK_N, CAUSAL, True, IEEE)
+    else:
+        for start_n in range(0, N, BLOCK_N):
+            acc, l0, l1, m_i = _rfa_fwd_tile(acc, l0, l1, m_i, q, q_sq, t_q, offs_m, start_n, K, V, KSQ, T, k_base,
+                                             v_base, kn_base, t_base, skn, svn, N, mu2, kappa2, e_lo,
+                                             D2, DV, BLOCK_N, CAUSAL, True, IEEE)
+
+    acc = acc / l1[:, None]
+    tl.store(O + b * sob + h * soh + offs_m[:, None] * son + offs_v[None, :], acc.to(O.dtype.element_ty),
+             mask=row_ok[:, None])
+    tl.store(LSE1 + bh * N + offs_m, (m_i + tl.log2(l1)) / 1.4426950408889634, mask=row_ok)
+    tl.store(LSE0 + bh * N + offs_m, (m_i + tl.log2(l0)) / 1.4426950408889634, mask=row_ok)
+
+
+_TUNED_RFA = {}
+
+
+def rfa_forward(q, k, v, t, q_sq, k_sq, mu, kappa, lo, causal, config=None):
+    """
+    (o1, lse1, lse0) of the lean RFA's fused forward. q, k: [B, H, N, 2D]; v: [B, H, N, Dv] (same dtype); t: [B|1, N];
+    q_sq, k_sq: [B, H, N] float32; mu, kappa: [H]; lo: the lower clamp of log E (RFA's min_exponent).
+    config: (BLOCK_M, BLOCK_N, num_warps, num_stages), else tuned per shape on first use (_CONFIGS).
+    """
+    import math
+    B, H, N, D2 = q.shape
+    DV = v.shape[-1]
+    q, k, v = (x if x.stride(-1) == 1 else x.contiguous() for x in (q, k, v))
+    t = t.to(torch.float32).expand(B, N).contiguous()
+    q_sq, k_sq = (x.to(torch.float32).contiguous() for x in (q_sq, k_sq))
+    mu, kappa = mu.to(torch.float32).contiguous(), kappa.to(torch.float32).contiguous()
+    o = torch.empty(B, H, N, DV, device=q.device, dtype=v.dtype)
+    lse1 = torch.empty(B, H, N, device=q.device, dtype=torch.float32)
+    lse0 = torch.empty_like(lse1)
+    args = (q, k, v, t, q_sq, k_sq, mu, kappa, o, lse1, lse0,
+            q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
+            v.stride(0), v.stride(1), v.stride(2), o.stride(0), o.stride(1), o.stride(2), t.stride(0), H, N,
+            math.exp(lo))
+    meta = dict(D2=D2, DV=DV, CAUSAL=causal, IEEE=q.dtype == torch.float32)
+
+    def launch(cfg):
+        bm, bn, nw, ns = cfg
+        _rfa_fwd_kernel[(triton.cdiv(N, bm), B * H)](*args, BLOCK_M=bm, BLOCK_N=bn, num_warps=nw, num_stages=ns,
+                                                      **meta)
+    if config is None:
+        key = (N, D2, DV, q.dtype, causal, B * H, torch.cuda.get_device_name(q.device))
+        if key not in _TUNED_RFA:
+            timed = []
+            for cfg in _CONFIGS:
+                try:
+                    timed.append((_time_launch(lambda: launch(cfg), reps=20), cfg))
+                except OutOfResources:
+                    continue
+            _TUNED_RFA[key] = min(timed)[1]
+        config = _TUNED_RFA[key]
+    launch(config)
+    return o, lse1, lse0
