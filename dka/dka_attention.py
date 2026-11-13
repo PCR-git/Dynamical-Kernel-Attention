@@ -240,7 +240,11 @@ class MultiheadIsotropicDKA(nn.Module):
             if return_metadata:
                 raise ValueError("return_metadata needs kernel='explicit'")
             tau = torch.exp(self.log_tau) if self.log_tau is not None else None
-            update = {"flex": flex_update, "blocked": blocked_update}.get(c.kernel, two_pass_update)
+            if c.kernel == "triton":
+                from .fused import triton_update                    # imports Triton only when used
+                update = triton_update
+            else:
+                update = {"flex": flex_update, "blocked": blocked_update}.get(c.kernel, two_pass_update)
             dV, step = update(p, t, Q, K, V, V_rot, cos, sin, c, tau, causal)
         else:
             # --- Update, over blocks of queries when query_chunk is set (rows are independent; same result) ---

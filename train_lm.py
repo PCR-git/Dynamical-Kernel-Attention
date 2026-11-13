@@ -78,9 +78,10 @@ def main():
                    "preset's train_bf16; matmuls in bf16; "
                    "positions, phases, the residual's cross term and the elementwise kernels stay float32)")
     p.add_argument("--tf32", action="store_true", help="TF32 tensor cores for float32 matmuls")
-    p.add_argument("--kernel", choices=("explicit", "flex"), default=None, help="how attention is computed; flex = "
+    p.add_argument("--kernel", choices=("explicit", "flex", "triton"), default=None, help="how attention is computed; flex = "
                    "fused kernels, weights never materialized (DKA, RFA: FlexAttention; baselines: flash / memory-efficient "
-                   "attention, FlexAttention with a distance bias or null slot); needs CUDA; default explicit")
+                   "attention, FlexAttention with a distance bias or null slot); triton = DKA's own fused kernel (lean "
+                   "variant: flat precision, exponential weight), the others as with flex; needs CUDA; default explicit")
     p.add_argument("--small-embed-init", action="store_true", help="embedding init std 0.02 instead of the published "
                    "N(0,1) (default: the preset's train_embed_init_std)")
     p.add_argument("--max-steps", type=int, default=None, help="limit train/eval batches per epoch (quick tests)")

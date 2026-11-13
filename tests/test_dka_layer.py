@@ -598,7 +598,8 @@ def test_blocked_reference():
     import dka.fused_reference as fr
     x, t = inputs(N=10)
     cases = [dict(), dict(robust_weight=False), dict(temperature=True), dict(output="estimate"),
-             dict(rotate_values=False), dict(prior="none"), dict(learn_decay=True)]
+             dict(rotate_values=False), dict(prior="none"), dict(learn_decay=True),
+             dict(flat_precision=True), dict(flat_precision=True, robust_weight=False, temperature=True)]
     blocks = (fr.BLOCK_M, fr.BLOCK_N)
     try:
         for (bm, bn) in ((4, 3), (3, 5), (16, 16)):
@@ -705,6 +706,42 @@ def test_fused_lean_backward_gpu():
         sum((o * wi.cuda()).sum() for o, wi in zip(outs, w)).backward()
         for a, r in zip(gpu_in, ref_in):
             close(a.grad.double().cpu() / r.grad.abs().max(), r.grad / r.grad.abs().max(), 1e-5)
+
+
+def test_triton_layer_gpu():
+    """The layer with kernel='triton' (lean variant: flat precision, exponential weight) equals the explicit layer in
+    float32, outputs and every parameter gradient: regular, irregular and non-causal positions, with temperature and
+    the estimate output; head_dim 16 (the kernel needs 2 head_dim >= 16, a power of two). GPU only (skipped without one)."""
+    try:
+        assert torch.cuda.device_count() > 0
+        import dka.fused  # noqa: F401
+    except Exception:
+        print("        (skipped: no GPU or Triton)")
+        return
+    lean = dict(flat_precision=True, robust_weight=False)
+    x, t = inputs(N=150)
+    x, t = x.float().cuda(), t.float().cuda()
+    for kw in (dict(temperature=True), dict(output="estimate")):
+        for t_m, causal in ((None, True), (t, True), (t, False)):
+            torch.manual_seed(0)
+            ref = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=16, **lean, **kw)).cuda()
+            fast = MultiheadIsotropicDKA(DKAConfig(d_model=D_MODEL, n_heads=H, head_dim=16, **lean, **kw,
+                                                   kernel="triton")).cuda()
+            fast.load_state_dict(ref.state_dict())
+            with torch.no_grad():
+                for m in (ref, fast):
+                    m.sigma_raw.add_(1.0)
+                    if m.log_tau is not None:
+                        m.log_tau.copy_(torch.tensor([0.3, -0.2, 0.5]))
+            o_r, _ = ref(x, t_measure=t_m, causal=causal)
+            o_f, _ = fast(x, t_measure=t_m, causal=causal)
+            close(o_f.double(), o_r.double(), 2e-5)
+            o_r.square().mean().backward()
+            o_f.square().mean().backward()
+            for (n, a), (_, b) in zip(ref.named_parameters(), fast.named_parameters()):
+                if a.grad is not None:
+                    close(b.grad.double() / a.grad.abs().max().clamp_min(1e-12),
+                          a.grad.double() / a.grad.abs().max().clamp_min(1e-12), 1e-4)
 
 
 def test_flex_kernel_cpu():

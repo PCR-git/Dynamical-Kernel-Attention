@@ -134,7 +134,7 @@ class RFAConfig:
             epsilon=args.epsilon,
             min_exponent=args.min_exponent,
             max_exponent=args.max_exponent,
-            kernel=getattr(args, "dka_kernel", "explicit"),
+            kernel={"triton": "flex"}.get(getattr(args, "dka_kernel", "explicit"), getattr(args, "dka_kernel", "explicit")),
         )
 
 
@@ -262,8 +262,9 @@ class DKAConfig:
     # How the update is computed: "explicit" materializes every pair's weight (the reference, with diagnostics);
     # "two_pass" writes it as two softmax passes (dka/flex.py), the form a fused kernel computes; "flex" computes
     # those passes with FlexAttention (GPU; memory linear in the length; no per-pair diagnostics); "blocked" is the
-    # fused kernel's reference (dka/fused_reference.py: one pass, tile by tile, hand-written backward; slow)
-    kernel: Literal["explicit", "two_pass", "flex", "blocked"] = "explicit"
+    # fused kernel's reference (dka/fused_reference.py: one pass, tile by tile, hand-written backward; slow);
+    # "triton" is the fused kernel (dka/fused.py; so far the lean variant: flat precision and the exponential weight)
+    kernel: Literal["explicit", "two_pass", "flex", "blocked", "triton"] = "explicit"
 
     # --- Numerics ---
     epsilon: float = 1e-5
@@ -279,16 +280,20 @@ class DKAConfig:
             raise ValueError(f"inflation must be in [0, 1), got {self.inflation}")
         if self.residual == "polar" and (self.inflation is not None or self.weight != "robust"):
             raise ValueError("residual='polar' needs h = E^2 (no inflation) and weight='robust'")
-        if self.kernel in ("flex", "blocked") and (self.zero_decay or self.zero_decay_frac > 0):
+        if self.kernel == "triton" and (not self.flat_precision or self.robust_weight):
+            raise ValueError("kernel='triton' supports the lean variant so far: flat_precision=True, robust_weight=False")
+        if (self.kernel in ("flex", "blocked") and not self.flat_precision
+                and (self.zero_decay or self.zero_decay_frac > 0)):
             raise ValueError(f"kernel={self.kernel!r} needs mu > 0 in every head (it uses Sigma_n = v_inf (1 - E^2) "
                              "+ eta^2)")
         if self.kernel != "explicit" and (self.weight != "robust" or self.residual != "euclidean"
                                           or self.inflation is not None or self.saturation is not None
-                                          or self.flat_precision or self.test_scale != "sigma_n"
+                                          or (self.flat_precision and self.kernel not in ("blocked", "triton"))
+                                          or self.test_scale != "sigma_n"
                                           or self.key_evidence or self.plain_values):
             raise ValueError(f"kernel={self.kernel!r} supports the Student-t or exponential weight with the Euclidean "
-                             "residual, without inflation, saturation, flat precision, test_scale, key_evidence or "
-                             "plain values (so far)")
+                             "residual, without inflation, saturation, test_scale, key_evidence or plain values, and "
+                             "flat precision only with 'blocked' and 'triton' (so far)")
         if self.learn_decay and (self.zero_decay or self.zero_rotations or self.decay_init != "spectral"):
             raise ValueError("learn_decay needs the coupled decay (no zero_decay, zero_rotations or log-linear init)")
         if self.test_scale != "sigma_n" and (self.weight != "robust" or self.residual in ("polar", "polar_obs")

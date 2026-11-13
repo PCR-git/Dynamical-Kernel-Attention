@@ -48,7 +48,8 @@ def attention_config_from_args(args, d_model, n_heads, width):
                            bias_slope_scale=getattr(args, "bias_slope_scale", 1.0),
                            output=getattr(args, "baseline_output", "estimate"),
                            learned_null=getattr(args, "baseline_null", False),
-                           kernel="fused" if getattr(args, "dka_kernel", "explicit") == "flex" else "explicit")
+                           kernel="fused" if getattr(args, "dka_kernel", "explicit") in ("flex", "triton")
+                           else "explicit")
 
 
 def rfa_config_from_args(args, n_heads, input_dim, query_key_dim=None, value_dim=None,

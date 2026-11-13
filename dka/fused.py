@@ -515,3 +515,35 @@ class FusedLean(torch.autograd.Function):
         dq, dk, dv, dmu, dkappa = lean_backward(q, k, v, t, mu, kappa, o, lse1, lse2, do.to(o.dtype), dlse1, dlse2,
                                                 ctx.causal)
         return dq, dk, dv, None, dmu.to(mu.dtype), dkappa.to(kappa.dtype), None
+
+
+
+@torch.compiler.disable      # the Triton launches and the tuner stay outside an enclosing torch.compile
+def _lean_call(q, k, v, t, mu, kappa, causal):
+    return FusedLean.apply(q, k, v, t, mu, kappa, causal)
+
+
+def triton_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
+    """
+    The layer's dV (and step) through the fused kernel, lean variant (flat precision, exponential weight): the logit
+    -log eta^2 + log E - tau R^2 / (nu eta^2), i.e. kappa = tau / (nu eta^2) in the kernel and -log eta^2 added to both
+    log-sum-exps before the null slot is combined. flex_update's interface; q, k, v enter the kernel in the autocast
+    dtype (bf16 under autocast), everything else is float32.
+    """
+    from .flex import combine
+    B, N, H, D, _ = Q.shape
+    if 2 * D < 16 or (2 * D) & (2 * D - 1):
+        raise ValueError(f"kernel='triton' needs 2 head_dim >= 16 and a power of two, got head_dim={D}")
+    low = torch.is_autocast_enabled(Q.device.type)
+    dtype = torch.get_autocast_dtype(Q.device.type) if low else Q.dtype
+    f32 = torch.promote_types(dtype, torch.float32)
+    flat = lambda X: X.flatten(-2).transpose(1, 2).to(dtype).contiguous()          # [B, H, N, 2D]
+    q, k, v = flat(Q), flat(K), flat(V_rot)
+    eta, nu = p["eta_sq"].to(f32), p["nu"].to(f32)
+    kappa = (tau.to(f32) if tau is not None else torch.ones_like(nu)) / (nu * eta)
+    o1, lse1, lse2 = _lean_call(q, k, v, t.to(torch.float32), p["mu"].to(f32), kappa, causal)
+    shift = -torch.log(eta)                                                          # [H]
+    o1 = o1.to(f32).transpose(1, 2).reshape(B, N, H, D, 2)
+    lse1, lse2 = lse1.transpose(1, 2) + shift, lse2.transpose(1, 2) + shift          # [B, N, H]
+    rot = (cos, sin) if config.rotate_values else (None, None)
+    return combine(o1, lse1, lse2, p["log_prior_precision"].to(f32), V.to(f32), *rot)

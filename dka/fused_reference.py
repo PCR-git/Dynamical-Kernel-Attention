@@ -178,8 +178,12 @@ def blocked_update(p, t, Q, K, V, V_rot, cos, sin, config, tau, causal=True):
     flat = lambda X: X.flatten(-2).transpose(1, 2).to(f32).contiguous()            # [B, H, N, 2D]
     q, k, v = flat(Q), flat(K), flat(V_rot)
     mu, eta, nu = (p[n].to(f32) for n in ("mu", "eta_sq", "nu"))
-    v_inf = p["sigma_sq"].to(f32) / (2 * mu)
-    s_inf, inv_nu = v_inf + eta, 1 / nu
+    if config.flat_precision:                                                    # Sigma_n = eta^2 at every lag
+        v_inf, s_inf = torch.zeros_like(eta), eta
+    else:
+        v_inf = p["sigma_sq"].to(f32) / (2 * mu)
+        s_inf = v_inf + eta
+    inv_nu = 1 / nu
     coef = (nu + config.head_dim) / config.head_dim if config.robust_weight else torch.ones_like(nu)
     if tau is not None:
         coef = coef * tau.to(f32)
