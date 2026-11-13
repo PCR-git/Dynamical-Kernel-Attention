@@ -678,6 +678,35 @@ def test_fused_forward_gpu():
                     close(a.double().cpu(), r, 2e-6)
 
 
+def test_fused_lean_backward_gpu():
+    """The lean Triton update (FusedLean: w = log E - kappa R^2, forward and backward) against the blocked reference
+    with Sigma_n = 1 and coef = 1 in float32: gradients of q, k, v, mu and kappa through o1, lse1 and lse2, causal and
+    not, irregular positions, a length that is not a multiple of the block size. GPU only (skipped without one)."""
+    try:
+        assert torch.cuda.device_count() > 0
+        from dka.fused import FusedLean
+    except Exception:
+        print("        (skipped: no GPU or Triton)")
+        return
+    from dka.fused_reference import BlockedDKA
+    g = torch.Generator().manual_seed(0)
+    B, H, N = 2, 3, 150
+    q0, k0, v0 = (0.4 * torch.randn(B, H, N, 32, generator=g) for _ in range(3))
+    mu0, kappa0 = torch.tensor([0.1, 0.4, 0.7]), torch.tensor([0.05, 0.2, 0.1])
+    w = [torch.randn(B, H, N, 32, generator=g), torch.randn(B, H, N, generator=g), torch.randn(B, H, N, generator=g)]
+    t = torch.cumsum(0.4 + torch.rand(B, N, generator=g), 1)
+    one, zero = torch.ones(H, dtype=F64), torch.zeros(H, dtype=F64)
+    for causal in (True, False):
+        ref_in = [x.double().clone().requires_grad_() for x in (q0, k0, v0, mu0, kappa0)]
+        outs = BlockedDKA.apply(*ref_in[:3], t.double(), ref_in[3], zero, one, ref_in[4], one, False, causal, 32, 32)
+        sum((o * wi.double()).sum() for o, wi in zip(outs, w)).backward()
+        gpu_in = [x.cuda().clone().requires_grad_() for x in (q0, k0, v0, mu0, kappa0)]
+        outs = FusedLean.apply(*gpu_in[:3], t.cuda(), gpu_in[3], gpu_in[4], causal)
+        sum((o * wi.cuda()).sum() for o, wi in zip(outs, w)).backward()
+        for a, r in zip(gpu_in, ref_in):
+            close(a.grad.double().cpu() / r.grad.abs().max(), r.grad / r.grad.abs().max(), 1e-5)
+
+
 def test_flex_kernel_cpu():
     """kernel='flex' on the CPU (FlexAttention's unfused reference) equals the explicit update: a forward-only smoke
     test of the flex path, including its Sigma_n = (v_inf + eta^2) - v_inf E^2 and per-row scalars (FlexAttention has

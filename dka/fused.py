@@ -240,3 +240,278 @@ def fused_forward(q, k, v, t, q_sq, k_sq, consts, robust, causal, config=None, p
         config = _TUNED.get(key) or _tune(key, args, N, B * H, meta)
     _launch(config, args, N, B * H, meta)
     return o, lse1, lse2
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Backward pass, lean variant (flat precision, exponential weight): w = log E - kappa R^2 with kappa = tau / (nu eta^2)
+# per head (the constant -log eta^2 is added to the log-sum-exps outside the kernel). From fused_reference, with
+# Sigma constant and phi = x:
+#   G_w = P (dO . v - D + dlse1) + dlse2 Q,   G_R2 = -kappa G_w (0 where R^2 was clamped),   G_s = -2 E G_R2,
+#   G_logE = G_w + dlse2 Q + E G_R2 (2 E |q|^2 - 2 s),   dkappa = -sum G_w R^2,   dmu = -sum G_logE lag.
+# _lean_bwd_dkdv: one program per key block, looping over the query blocks (dK, dV, d|k|^2, and the per-head sums as one
+# partial per program); _lean_bwd_dq: one program per query block, looping over the key blocks (dQ, d|q|^2). Every sum
+# is a reduction within one program: no atomic additions.
+# ---------------------------------------------------------------------------------------------------------------------
+
+@triton.jit
+def _lean_tile(q, k, q_sq, k_sq, t_q, t_k, offs_m, offs_n, N, mu2, kappa2, CAUSAL: tl.constexpr, IEEE: tl.constexpr):
+    """Recomputed pair terms of a tile: s, lag, E, R^2 (clamped), kept, w (log2 units, masked to -inf)."""
+    if IEEE:
+        s = tl.dot(q, tl.trans(k), input_precision="ieee")
+    else:
+        s = tl.dot(q, tl.trans(k))
+    lag = t_q[:, None] - t_k[None, :]
+    lag = tl.maximum(lag, 0.0) if CAUSAL else tl.abs(lag)
+    log2_e = -mu2 * lag
+    e = tl.exp2(log2_e)
+    r2 = k_sq[None, :] + e * e * q_sq[:, None] - 2.0 * e * s
+    kept = r2 > 0.0
+    r2 = tl.where(kept, r2, 0.0)
+    w = log2_e - kappa2 * r2
+    keep = (offs_n[None, :] < N) & (offs_m[:, None] < N)
+    if CAUSAL:
+        keep = keep & (offs_m[:, None] >= offs_n[None, :])
+    w = tl.where(keep, w, float("-inf"))
+    return s, lag, log2_e, e, r2, kept, w
+
+
+@triton.jit
+def _lean_bwd_dkdv(Q, K, V, T, QSQ, KSQ, DO, LSE1, LSE2, DLSE1, DLSE2, DD, MU, KAPPA,
+                   DK, DV, DKSQ, PMU, PKAPPA,
+                   sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sdb, sdh, sdn, stb, H, N, NKB,
+                   D2: tl.constexpr, DVD: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                   CAUSAL: tl.constexpr, IEEE: tl.constexpr):
+    pid_n = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // H
+    h = bh % H
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    col_ok = offs_n < N
+    k = tl.load(K + b * skb + h * skh + offs_n[:, None] * skn + offs_d[None, :], mask=col_ok[:, None], other=0.0)
+    v = tl.load(V + b * svb + h * svh + offs_n[:, None] * svn + offs_v[None, :], mask=col_ok[:, None], other=0.0)
+    k_sq = tl.load(KSQ + bh * N + offs_n, mask=col_ok, other=0.0)
+    t_k = tl.load(T + b * stb + offs_n, mask=col_ok, other=0.0)
+    mu = tl.load(MU + h)
+    kappa = tl.load(KAPPA + h)
+    mu2 = mu * 1.4426950408889634
+    kappa2 = kappa * 1.4426950408889634
+
+    dk = tl.zeros([BLOCK_N, D2], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, DVD], dtype=tl.float32)
+    dk_sq = tl.zeros([BLOCK_N], dtype=tl.float32)
+    p_mu = tl.zeros([BLOCK_N], dtype=tl.float32)
+    p_kappa = tl.zeros([BLOCK_N], dtype=tl.float32)
+
+    lo = (pid_n * BLOCK_N // BLOCK_M) * BLOCK_M if CAUSAL else 0
+    for start_m in range(lo, N, BLOCK_M):
+        offs_m = start_m + tl.arange(0, BLOCK_M)
+        row_ok = offs_m < N
+        q = tl.load(Q + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], mask=row_ok[:, None], other=0.0)
+        do = tl.load(DO + b * sdb + h * sdh + offs_m[:, None] * sdn + offs_v[None, :], mask=row_ok[:, None],
+                     other=0.0)
+        q_sq = tl.load(QSQ + bh * N + offs_m, mask=row_ok, other=0.0)
+        t_q = tl.load(T + b * stb + offs_m, mask=row_ok, other=0.0)
+        lse1 = tl.load(LSE1 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+        lse2 = tl.load(LSE2 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+        dlse1 = tl.load(DLSE1 + bh * N + offs_m, mask=row_ok, other=0.0)
+        dlse2 = tl.load(DLSE2 + bh * N + offs_m, mask=row_ok, other=0.0)
+        dd = tl.load(DD + bh * N + offs_m, mask=row_ok, other=0.0)
+
+        s, lag, log2_e, e, r2, kept, w = _lean_tile(q, k, q_sq, k_sq, t_q, t_k, offs_m, offs_n, N, mu2, kappa2,
+                                                    CAUSAL, IEEE)
+        p = tl.exp2(w - lse1[:, None])
+        qw = tl.exp2(w + log2_e - lse2[:, None])
+        if IEEE:
+            dv += tl.dot(tl.trans(p), do, input_precision="ieee")
+            dp = tl.dot(do, tl.trans(v), input_precision="ieee")
+        else:
+            dv += tl.dot(tl.trans(p.to(do.dtype)), do)
+            dp = tl.dot(do, tl.trans(v))
+        g_w = p * (dp - dd[:, None] + dlse1[:, None]) + dlse2[:, None] * qw
+        g_r2 = tl.where(kept, -kappa * g_w, 0.0)
+        g_s = -2.0 * e * g_r2
+        if IEEE:
+            dk += tl.dot(tl.trans(g_s), q, input_precision="ieee")
+        else:
+            dk += tl.dot(tl.trans(g_s.to(q.dtype)), q)
+        dk_sq += tl.sum(g_r2, 0)
+        g_loge = g_w + dlse2[:, None] * qw + e * g_r2 * (2.0 * e * q_sq[:, None] - 2.0 * s)
+        p_mu += tl.sum(-g_loge * lag, 0)
+        p_kappa += tl.sum(-g_w * r2, 0)
+
+    tl.store(DK + b * skb + h * skh + offs_n[:, None] * skn + offs_d[None, :], dk.to(DK.dtype.element_ty),
+             mask=col_ok[:, None])
+    tl.store(DV + b * svb + h * svh + offs_n[:, None] * svn + offs_v[None, :], dv.to(DV.dtype.element_ty),
+             mask=col_ok[:, None])
+    tl.store(DKSQ + bh * N + offs_n, dk_sq, mask=col_ok)
+    tl.store(PMU + bh * NKB + pid_n, tl.sum(p_mu, 0))
+    tl.store(PKAPPA + bh * NKB + pid_n, tl.sum(p_kappa, 0))
+
+
+@triton.jit
+def _lean_bwd_dq(Q, K, V, T, QSQ, KSQ, DO, LSE1, LSE2, DLSE1, DLSE2, DD, MU, KAPPA, DQ, DQSQ,
+                 sqb, sqh, sqn, skb, skh, skn, svb, svh, svn, sdb, sdh, sdn, stb, H, N,
+                 D2: tl.constexpr, DVD: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                 CAUSAL: tl.constexpr, IEEE: tl.constexpr):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // H
+    h = bh % H
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, D2)
+    offs_v = tl.arange(0, DVD)
+    row_ok = offs_m < N
+    q = tl.load(Q + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], mask=row_ok[:, None], other=0.0)
+    do = tl.load(DO + b * sdb + h * sdh + offs_m[:, None] * sdn + offs_v[None, :], mask=row_ok[:, None], other=0.0)
+    q_sq = tl.load(QSQ + bh * N + offs_m, mask=row_ok, other=0.0)
+    t_q = tl.load(T + b * stb + offs_m, mask=row_ok, other=0.0)
+    lse1 = tl.load(LSE1 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    lse2 = tl.load(LSE2 + bh * N + offs_m, mask=row_ok, other=0.0) * 1.4426950408889634
+    dlse1 = tl.load(DLSE1 + bh * N + offs_m, mask=row_ok, other=0.0)
+    dlse2 = tl.load(DLSE2 + bh * N + offs_m, mask=row_ok, other=0.0)
+    dd = tl.load(DD + bh * N + offs_m, mask=row_ok, other=0.0)
+    mu = tl.load(MU + h)
+    kappa = tl.load(KAPPA + h)
+    mu2 = mu * 1.4426950408889634
+    kappa2 = kappa * 1.4426950408889634
+
+    dq = tl.zeros([BLOCK_M, D2], dtype=tl.float32)
+    dq_sq = tl.zeros([BLOCK_M], dtype=tl.float32)
+    hi = tl.minimum((pid_m + 1) * BLOCK_M, N) if CAUSAL else N
+    for start_n in range(0, hi, BLOCK_N):
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        col_ok = offs_n < N
+        k = tl.load(K + b * skb + h * skh + offs_n[:, None] * skn + offs_d[None, :], mask=col_ok[:, None], other=0.0)
+        v = tl.load(V + b * svb + h * svh + offs_n[:, None] * svn + offs_v[None, :], mask=col_ok[:, None], other=0.0)
+        k_sq = tl.load(KSQ + bh * N + offs_n, mask=col_ok, other=0.0)
+        t_k = tl.load(T + b * stb + offs_n, mask=col_ok, other=0.0)
+        s, lag, log2_e, e, r2, kept, w = _lean_tile(q, k, q_sq, k_sq, t_q, t_k, offs_m, offs_n, N, mu2, kappa2,
+                                                    CAUSAL, IEEE)
+        p = tl.exp2(w - lse1[:, None])
+        qw = tl.exp2(w + log2_e - lse2[:, None])
+        if IEEE:
+            dp = tl.dot(do, tl.trans(v), input_precision="ieee")
+        else:
+            dp = tl.dot(do, tl.trans(v))
+        g_w = p * (dp - dd[:, None] + dlse1[:, None]) + dlse2[:, None] * qw
+        g_r2 = tl.where(kept, -kappa * g_w, 0.0)
+        g_s = -2.0 * e * g_r2
+        if IEEE:
+            dq += tl.dot(g_s, k, input_precision="ieee")
+        else:
+            dq += tl.dot(g_s.to(k.dtype), k)
+        dq_sq += tl.sum(g_r2 * e * e, 1)
+
+    tl.store(DQ + b * sqb + h * sqh + offs_m[:, None] * sqn + offs_d[None, :], dq.to(DQ.dtype.element_ty),
+             mask=row_ok[:, None])
+    tl.store(DQSQ + bh * N + offs_m, dq_sq, mask=row_ok)
+
+
+# Backward configurations (BLOCK_M, BLOCK_N, num_warps, num_stages), tuned per kernel and shape: each program holds
+# float32 accumulators of its own block (dK and dV: 2 x BLOCK_N x width; dQ: BLOCK_M x width) besides the tiles it
+# streams, so at width 128 only small blocks fit in registers
+_BWD_CONFIGS = [(16, 32, 4, 1), (32, 32, 4, 1), (32, 16, 4, 1), (16, 16, 4, 1), (32, 32, 8, 1), (64, 32, 8, 1),
+                (32, 64, 8, 1), (16, 64, 4, 1), (64, 16, 4, 1), (64, 64, 4, 2), (32, 32, 4, 2), (64, 32, 4, 2),
+                (32, 64, 4, 2)]
+_TUNED_BWD = {}
+
+
+def _time_launch(fn, reps=10):
+    for _ in range(2):
+        fn()
+    torch.cuda.synchronize()
+    ts = []
+    for _ in range(reps):
+        st, en = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        st.record(); fn(); en.record(); torch.cuda.synchronize()
+        ts.append(st.elapsed_time(en))
+    return sorted(ts)[len(ts) // 2]
+
+
+def lean_backward(q, k, v, t, mu, kappa, o, lse1, lse2, do, dlse1, dlse2, causal, config=None):
+    """
+    Gradients (dq, dk, dv, dmu, dkappa) of the lean fused update (w = log E - kappa R^2): q, k: [B, H, N, 2D]; v, o, do:
+    [B, H, N, Dv]; lse1, lse2 (the kernel's, without -log eta^2), dlse1, dlse2: [B, H, N]; mu, kappa: [H].
+    config: ((BLOCK_M, BLOCK_N, num_warps, num_stages) of the dK/dV kernel, the same of the dQ kernel); else each is
+    tuned per shape on first use.
+    """
+    B, H, N, D2 = q.shape
+    DV = v.shape[-1]
+    ieee = q.dtype == torch.float32
+    q, k, v, do = (x.contiguous() for x in (q, k, v, do))
+    t = t.to(torch.float32).expand(B, N).contiguous()
+    q_sq, k_sq = q.float().pow(2).sum(-1).contiguous(), k.float().pow(2).sum(-1).contiguous()
+    dd = (do.float() * o.float()).sum(-1).contiguous()
+    lse1, lse2, dlse1, dlse2 = (x.float().contiguous() for x in (lse1, lse2, dlse1, dlse2))
+    mu, kappa = mu.float().contiguous(), kappa.float().contiguous()
+    dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+    dq_sq, dk_sq = torch.empty_like(q_sq), torch.empty_like(k_sq)
+    strides = (q.stride(0), q.stride(1), q.stride(2), k.stride(0), k.stride(1), k.stride(2),
+               v.stride(0), v.stride(1), v.stride(2), do.stride(0), do.stride(1), do.stride(2), t.stride(0), H, N)
+    common = (q, k, v, t, q_sq, k_sq, do, lse1, lse2, dlse1, dlse2, dd, mu, kappa)
+    meta = dict(D2=D2, DVD=DV, CAUSAL=causal, IEEE=ieee)
+    partials = {}
+
+    def run_dkdv(cfg):
+        bm, bn, nw, ns = cfg
+        nkb = triton.cdiv(N, bn)
+        p_mu = torch.empty(B * H, nkb, device=q.device, dtype=torch.float32)
+        p_kappa = torch.empty_like(p_mu)
+        _lean_bwd_dkdv[(nkb, B * H)](*common, dk, dv, dk_sq, p_mu, p_kappa, *strides, nkb, BLOCK_M=bm, BLOCK_N=bn,
+                                     num_warps=nw, num_stages=ns, **meta)
+        partials["mu"], partials["kappa"] = p_mu, p_kappa
+
+    def run_dq(cfg):
+        bm, bn, nw, ns = cfg
+        _lean_bwd_dq[(triton.cdiv(N, bm), B * H)](*common, dq, dq_sq, *strides, BLOCK_M=bm, BLOCK_N=bn, num_warps=nw,
+                                                  num_stages=ns, **meta)
+
+    if config is None:
+        key = (N, D2, DV, q.dtype, causal, B * H, torch.cuda.get_device_name(q.device))
+        if key not in _TUNED_BWD:
+            best = []
+            for run in (run_dkdv, run_dq):
+                timed = []
+                for cfg in _BWD_CONFIGS:
+                    try:
+                        timed.append((_time_launch(lambda: run(cfg)), cfg))
+                    except OutOfResources:
+                        continue
+                best.append(min(timed)[1])
+            _TUNED_BWD[key] = tuple(best)
+        config = _TUNED_BWD[key]
+    run_dkdv(config[0])
+    run_dq(config[1])
+    p_mu, p_kappa = partials["mu"], partials["kappa"]
+    dq = (dq.float() + 2 * q.float() * dq_sq[..., None]).to(q.dtype)
+    dk = (dk.float() + 2 * k.float() * dk_sq[..., None]).to(k.dtype)
+    dmu = p_mu.view(B, H, -1).sum(dim=(0, 2))
+    dkappa = p_kappa.view(B, H, -1).sum(dim=(0, 2))
+    return dq, dk, dv, dmu, dkappa
+
+
+class FusedLean(torch.autograd.Function):
+    """(o1, lse1, lse2) of the lean update, w = log E - kappa R^2 (without the constant -log eta^2), with the Triton
+    forward and backward. Inputs q, k, v [B, H, N, 2D | Dv] (one dtype), t [B|1, N], mu and kappa [H]."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, t, mu, kappa, causal):
+        q_sq, k_sq = q.float().pow(2).sum(-1), k.float().pow(2).sum(-1)
+        one, zero = torch.ones_like(mu, dtype=torch.float32), torch.zeros_like(mu, dtype=torch.float32)
+        o, lse1, lse2 = fused_forward(q, k, v, t, q_sq, k_sq, (mu, zero, one, kappa, one), False, causal, flat=True)
+        ctx.save_for_backward(q, k, v, t, mu, kappa, o, lse1, lse2)
+        ctx.causal = causal
+        return o, lse1, lse2
+
+    @staticmethod
+    def backward(ctx, do, dlse1, dlse2):
+        q, k, v, t, mu, kappa, o, lse1, lse2 = ctx.saved_tensors
+        do = torch.zeros_like(o) if do is None else do
+        dlse1 = torch.zeros_like(lse1) if dlse1 is None else dlse1
+        dlse2 = torch.zeros_like(lse2) if dlse2 is None else dlse2
+        dq, dk, dv, dmu, dkappa = lean_backward(q, k, v, t, mu, kappa, o, lse1, lse2, do.to(o.dtype), dlse1, dlse2,
+                                                ctx.causal)
+        return dq, dk, dv, None, dmu.to(mu.dtype), dkappa.to(kappa.dtype), None
